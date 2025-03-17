@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: client-simulator
+  labels:
+    app: client-simulator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: client-simulator
+  template:
+    metadata:
+      labels:
+        app: client-simulator
+    spec:
+      containers:
+      - name: client-simulator
+        image: localhost:5000/client-simulator:latest
+        imagePullPolicy: Always
+        args:
+        - "--master-host"
+        - "master-server"
+        - "--master-port"
+        - "7000"
+        - "--num-clients"
+        - "50"
+        - "--action-interval"
+        - "500"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi 

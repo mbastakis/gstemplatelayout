@@ -71,19 +71,7 @@ namespace MasterServer
 
         protected override async Task ProcessMessageAsync(string clientId, Message message)
         {
-            Logger.System(LogLevel.Info, $"Processing message from {clientId}: Type={message.Type}, RawData={message.Data}");
-            
-            // Add more debug info for client-related messages
-            if (message.Type == MessageType.ClientConnect || message.Type == MessageType.ClientDisconnect)
-            {
-                try {
-                    var rawJson = Message.Serialize(message);
-                    Logger.Connection(LogLevel.Info, $"Client {clientId} message raw JSON: {rawJson}");
-                }
-                catch (Exception ex) {
-                    Logger.Error($"Error serializing client message: {ex.Message}");
-                }
-            }
+            Logger.System(LogLevel.Info, $"Processing message from {clientId}: Type={message.Type}");
             
             if (message.Type != MessageType.GameServerHeartbeat)
             {
@@ -101,7 +89,6 @@ namespace MasterServer
                     break;
                     
                 case MessageType.ClientConnect:
-                    Logger.System(LogLevel.Info, $"Client {clientId} requested connection (ClientConnect)");
                     await HandleClientConnectAsync(clientId, message);
                     break;
                     
@@ -211,11 +198,6 @@ namespace MasterServer
                 
                 await SendMessageAsync(clientId, Message.Create<object>(MessageType.ClientConnect, response));
                 
-                // Log the raw message being sent to help debug
-                var rawMessage = Message.Create<object>(MessageType.ClientConnect, response);
-                var serializedMessage = Message.Serialize(rawMessage);
-                Logger.Connection(LogLevel.Info, $"Raw message being sent: {serializedMessage}");
-                
                 Logger.Connection(LogLevel.Info, $"Client {clientId} routed to game server {bestServer.Id.Substring(0, 6)} at {bestServer.Endpoint}");
             }
             catch (Exception ex)
@@ -244,87 +226,95 @@ namespace MasterServer
                 using (client)
                 {
                     var remoteEndPoint = client.Client.RemoteEndPoint as System.Net.IPEndPoint;
+                    var isLikelyHealthCheck = false;
+                    
+                    // Check if there was no data received within a short time - likely a health check
+                    using var healthCheckTimeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));
+                    var combinedToken = CancellationTokenSource.CreateLinkedTokenSource(
+                        healthCheckTimeout.Token, cancellationToken).Token;
+                    
                     Logger.Connection(LogLevel.Info, $"Client {clientId} connected from {remoteEndPoint?.Address}:{remoteEndPoint?.Port}");
                     
                     var buffer = new byte[4096];
                     var stream = client.GetStream();
                     var messageBuilder = new StringBuilder();
                     
+                    try
+                    {
+                        // Try to read data with a timeout
+                        var bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length, combinedToken);
+                        
+                        if (bytesRead == 0)
+                        {
+                            Logger.Connection(LogLevel.Debug, $"Client {clientId} connected but sent no data - likely a health check");
+                            isLikelyHealthCheck = true;
+                            return;
+                        }
+                            
+                        var data = Encoding.UTF8.GetString(buffer, 0, bytesRead);
+                        messageBuilder.Append(data);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        // No data received within timeout - probably a health check
+                        if (healthCheckTimeout.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+                        {
+                            Logger.Connection(LogLevel.Debug, $"Client {clientId} timed out without sending data - likely a health check");
+                            isLikelyHealthCheck = true;
+                            return;
+                        }
+                        throw; // Re-throw if it's not a health check timeout
+                    }
+                    
+                    // Continue with normal message processing if we got past the health check
                     while (!cancellationToken.IsCancellationRequested && client.Connected)
                     {
-                        int bytesRead = 0;
-                        try
+                        var bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length, cancellationToken);
+                        
+                        if (bytesRead == 0)
+                            break;
+                            
+                        var data = Encoding.UTF8.GetString(buffer, 0, bytesRead);
+                        messageBuilder.Append(data);
+                        
+                        // Process complete messages
+                        var json = messageBuilder.ToString();
+                        var messages = json.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+                        
+                        foreach (var messageJson in messages)
                         {
-                            bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length, cancellationToken);
-                            
-                            if (bytesRead == 0)
-                                break;
+                            if (string.IsNullOrWhiteSpace(messageJson))
+                                continue;
                                 
-                            var data = Encoding.UTF8.GetString(buffer, 0, bytesRead);
-                            
-                            // Debug: Log the raw data received from the client
-                            Logger.Connection(LogLevel.Info, $"RawDataReceived[{bytesRead} bytes] from {clientId}: {data}");
-                            Logger.Connection(LogLevel.Info, $"ByteValues: {string.Join(",", buffer.Take(bytesRead).Select(b => b.ToString()))}");
-                            Logger.Connection(LogLevel.Info, $"Has newline: {data.Contains("\n")}");
-                            
-                            messageBuilder.Append(data);
-                            
-                            // Process complete messages
-                            var json = messageBuilder.ToString();
-                            var messages = json.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-                            
-                            foreach (var messageJson in messages)
+                            try
                             {
-                                if (string.IsNullOrWhiteSpace(messageJson))
-                                    continue;
+                                var message = Message.Deserialize(messageJson);
+                                if (message != null)
+                                {
+                                    await ProcessMessageAsync(clientId, message);
                                     
-                                Logger.Connection(LogLevel.Debug, $"Processing message from {clientId}: {messageJson}");
-                                
-                                try
-                                {
-                                    var message = Message.Deserialize(messageJson);
-                                    if (message != null)
+                                    // Force a flush of the network stream after sending a response
+                                    if (_clients.TryGetValue(clientId, out var clientInfo) && clientInfo?.Client?.GetStream() != null)
                                     {
-                                        await ProcessMessageAsync(clientId, message);
-                                        
-                                        // Force a flush of the network stream after sending a response
-                                        if (_clients.TryGetValue(clientId, out var clientInfo) && clientInfo?.Client?.GetStream() != null)
-                                        {
-                                            await clientInfo.Client.GetStream().FlushAsync(cancellationToken);
-                                        }
-                                    }
-                                    else
-                                    {
-                                        Logger.Error($"Received null message from client {clientId}: {messageJson}");
+                                        await clientInfo.Client.GetStream().FlushAsync(cancellationToken);
                                     }
                                 }
-                                catch (Exception ex)
+                                else
                                 {
-                                    Logger.Error($"Error processing message from client {clientId}: {ex.Message}");
-                                    Logger.Error($"Message JSON: {messageJson}");
+                                    Logger.Error($"Received null message from client {clientId}: {messageJson}");
                                 }
                             }
-                            
-                            // Keep any remaining partial message
-                            var lastNewline = json.LastIndexOf('\n');
-                            if (lastNewline >= 0)
+                            catch (Exception ex)
                             {
-                                messageBuilder.Remove(0, lastNewline + 1);
+                                Logger.Error($"Error processing message from client {clientId}", ex);
                             }
                         }
-                        catch (OperationCanceledException)
+                        
+                        // Keep any remaining partial message
+                        var lastNewline = json.LastIndexOf('\n');
+                        if (lastNewline >= 0)
                         {
-                            break;
-                        }
-                        catch (IOException ex)
-                        {
-                            Logger.Error($"IO error for client {clientId}: {ex.Message}");
-                            break;
-                        }
-                        catch (Exception ex)
-                        {
-                            Logger.Error($"Unexpected error for client {clientId}: {ex.Message}");
-                            break;
+                            messageBuilder.Remove(0, lastNewline + 1);
                         }
                     }
                 }
@@ -332,11 +322,11 @@ namespace MasterServer
             catch (Exception ex) when (ex is OperationCanceledException || ex is SocketException)
             {
                 // Expected when client disconnects
+                Logger.Connection(LogLevel.Debug, $"Client {clientId} disconnected due to socket or cancellation: {ex.GetType().Name}");
             }
             catch (Exception ex)
             {
-                Logger.Error($"Error handling client {clientId}: {ex.Message}");
-                Logger.Error($"Stack trace: {ex.StackTrace}");
+                Logger.Error($"Error handling client {clientId}", ex);
             }
             finally
             {

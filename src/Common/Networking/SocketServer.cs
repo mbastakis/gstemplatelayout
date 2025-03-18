@@ -128,21 +128,14 @@ namespace Common.Networking
                     
                     while (!cancellationToken.IsCancellationRequested && client.Connected)
                     {
-                        int bytesRead = 0;
                         try
                         {
-                            bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length, cancellationToken);
+                            var bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length, cancellationToken);
                             
                             if (bytesRead == 0)
                                 break;
                                 
                             var data = Encoding.UTF8.GetString(buffer, 0, bytesRead);
-                            
-                            // Debug: Log the raw data received from the client
-                            Logger.Connection(LogLevel.Info, $"RawDataReceived[{bytesRead} bytes] from {clientId}: {data}");
-                            Logger.Connection(LogLevel.Info, $"ByteValues: {string.Join(",", buffer.Take(bytesRead).Select(b => b.ToString()))}");
-                            Logger.Connection(LogLevel.Info, $"Has newline: {data.Contains("\n")}");
-                            
                             messageBuilder.Append(data);
                             
                             // Process complete messages
@@ -153,8 +146,6 @@ namespace Common.Networking
                             {
                                 if (string.IsNullOrWhiteSpace(messageJson))
                                     continue;
-                                    
-                                Logger.Connection(LogLevel.Debug, $"Processing message from {clientId}: {messageJson}");
                                 
                                 try
                                 {
@@ -177,7 +168,6 @@ namespace Common.Networking
                                 catch (Exception ex)
                                 {
                                     Logger.Error($"Error processing message from client {clientId}: {ex.Message}");
-                                    Logger.Error($"Message JSON: {messageJson}");
                                 }
                             }
                             
@@ -212,7 +202,6 @@ namespace Common.Networking
             catch (Exception ex)
             {
                 Logger.Error($"Error handling client {clientId}: {ex.Message}");
-                Logger.Error($"Stack trace: {ex.StackTrace}");
             }
             finally
             {
@@ -256,16 +245,13 @@ namespace Common.Networking
                 messageJson += "\n";
                 var messageBytes = Encoding.UTF8.GetBytes(messageJson);
                 
-                Logger.Connection(LogLevel.Debug, $"Sending to client {clientId.Substring(0, 6)}: Type={message.Type}, Length={messageBytes.Length} bytes");
-                Logger.Connection(LogLevel.Debug, $"Raw message: {messageJson.TrimEnd('\n')}");
+                Logger.Connection(LogLevel.Debug, $"Sending message to {clientId.Substring(0, 6)}: Type={message.Type}");
                 
                 var stream = clientInfo.Client.GetStream();
                 await stream.WriteAsync(messageBytes, 0, messageBytes.Length);
                 
                 // Force a flush to ensure the message is sent immediately
                 await stream.FlushAsync();
-                
-                Logger.Connection(LogLevel.Debug, $"Successfully sent message to client {clientId.Substring(0, 6)}: Type={message.Type}");
             }
             catch (Exception ex)
             {

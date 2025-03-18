@@ -180,15 +180,12 @@ namespace Common.Networking
                 messageJson += "\n";
                 var messageBytes = Encoding.UTF8.GetBytes(messageJson);
                 
-                Logger.Connection(LogLevel.Debug, $"Sending message to {_host}:{_port}: {messageBytes.Length} bytes, Type={message.Type}");
-                Logger.Connection(LogLevel.Debug, $"Raw message: {messageJson.TrimEnd('\n')}");
+                Logger.Connection(LogLevel.Debug, $"Sending message to {_host}:{_port}: {message.Type}");
                 
                 await _stream.WriteAsync(messageBytes, 0, messageBytes.Length);
                 
                 // Force flush to ensure the message is sent immediately
                 await _stream.FlushAsync();
-                
-                Logger.Connection(LogLevel.Debug, $"Message sent to {_host}:{_port}: {message.Type}");
             }
             catch (Exception ex)
             {

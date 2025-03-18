@@ -122,23 +122,15 @@ namespace ClientSimulator
                 case MessageType.ClientConnect:
                     try
                     {
-                        Logger.Connection(LogLevel.Info, $"[Client {_clientId}] Processing ClientConnect response: RawData={message.Data}");
                         var response = message.GetData<JsonElement>();
                         Logger.Connection(LogLevel.Debug, $"[Client {_clientId}] Received ClientConnect response: {JsonSerializer.Serialize(response)}");
                         
                         if (response.ValueKind == JsonValueKind.Object)
                         {
-                            bool successFound = false;
-                            bool endpointFound = false;
-                            
                             if (response.TryGetProperty("Success", out var success) && success.GetBoolean())
                             {
-                                successFound = true;
-                                Logger.Connection(LogLevel.Info, $"[Client {_clientId}] Success property found and is true");
-                                
                                 if (response.TryGetProperty("ServerEndpoint", out var serverEndpoint))
                                 {
-                                    endpointFound = true;
                                     var endpoint = serverEndpoint.GetString();
                                     Logger.Connection(LogLevel.Info, $"[Client {_clientId}] Received game server endpoint: {endpoint}");
                                     
@@ -162,13 +154,6 @@ namespace ClientSimulator
                             {
                                 Logger.Connection(LogLevel.Warning, $"[Client {_clientId}] Connection failed: {error.GetString()}");
                             }
-                            
-                            // Debug info if properties were not found
-                            if (!successFound || !endpointFound)
-                            {
-                                Logger.Error($"[Client {_clientId}] Missing expected properties in response. Object: {JsonSerializer.Serialize(response)}");
-                                Logger.Error($"[Client {_clientId}] Property names in response: {string.Join(", ", response.EnumerateObject().Select(p => p.Name))}");
-                            }
                         }
                         else
                         {
@@ -178,10 +163,6 @@ namespace ClientSimulator
                     catch (Exception ex)
                     {
                         Logger.Error($"[Client {_clientId}] Error processing master server response: {ex.Message}");
-                        if (message.Data != null)
-                        {
-                            Logger.Error($"[Client {_clientId}] Response data: {message.Data}");
-                        }
                     }
                     break;
                     

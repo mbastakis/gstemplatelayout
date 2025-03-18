@@ -37,6 +37,7 @@ namespace Common.Models
         public string Data { get; set; }
         
         [JsonPropertyName("timestamp")]
+        [JsonIgnore]
         public DateTime Timestamp { get; set; } = DateTime.UtcNow;
         
         public T GetData<T>()

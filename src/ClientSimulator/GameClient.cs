@@ -4,6 +4,8 @@ using System.Threading.Tasks;
 using Common.Logging;
 using Common.Models;
 using Common.Networking;
+using System.Text;
+using System.Net.Sockets;
 
 namespace ClientSimulator
 {
@@ -43,10 +45,28 @@ namespace ClientSimulator
                 
                 await _masterServerClient.ConnectAsync();
                 
+                // Explicitly send ClientConnect message with a small delay to ensure stable connection
+                await Task.Delay(500);
                 Logger.Connection(LogLevel.Debug, $"[Client {_clientId}] Connected to master server");
                 
                 // Request game server assignment
-                await _masterServerClient.SendMessageAsync(Message.Create<object>(MessageType.ClientConnect, null));
+                Logger.Connection(LogLevel.Debug, $"[Client {_clientId}] Preparing ClientConnect message...");
+                
+                // Create raw message to ensure proper serialization format
+                var connectMessage = new Message {
+                    Type = MessageType.ClientConnect,
+                    Data = JsonSerializer.Serialize(new { ClientId = _clientId })
+                };
+                
+                Logger.Connection(LogLevel.Info, $"[Client {_clientId}] ClientConnect message created with type {connectMessage.Type} and data: {connectMessage.Data}");
+                
+                // Serialize the message to see the exact JSON
+                var rawJson = JsonSerializer.Serialize(connectMessage);
+                Logger.Connection(LogLevel.Info, $"[Client {_clientId}] Raw JSON being sent: {rawJson}");
+                
+                // Send the message
+                await _masterServerClient.SendMessageAsync(connectMessage);
+                
                 Logger.Connection(LogLevel.Debug, $"[Client {_clientId}] Sent connection request to master server");
             }
             catch (Exception ex)
@@ -100,30 +120,68 @@ namespace ClientSimulator
             switch (message.Type)
             {
                 case MessageType.ClientConnect:
-                    var response = message.GetData<JsonElement>();
-                    if (response.ValueKind == JsonValueKind.Object)
+                    try
                     {
-                        if (response.TryGetProperty("Success", out var success) && success.GetBoolean())
+                        Logger.Connection(LogLevel.Info, $"[Client {_clientId}] Processing ClientConnect response: RawData={message.Data}");
+                        var response = message.GetData<JsonElement>();
+                        Logger.Connection(LogLevel.Debug, $"[Client {_clientId}] Received ClientConnect response: {JsonSerializer.Serialize(response)}");
+                        
+                        if (response.ValueKind == JsonValueKind.Object)
                         {
-                            if (response.TryGetProperty("ServerEndpoint", out var serverEndpoint))
+                            bool successFound = false;
+                            bool endpointFound = false;
+                            
+                            if (response.TryGetProperty("Success", out var success) && success.GetBoolean())
                             {
-                                var endpoint = serverEndpoint.GetString();
-                                var parts = endpoint.Split(':');
-                                if (parts.Length == 2 && int.TryParse(parts[1], out int port))
+                                successFound = true;
+                                Logger.Connection(LogLevel.Info, $"[Client {_clientId}] Success property found and is true");
+                                
+                                if (response.TryGetProperty("ServerEndpoint", out var serverEndpoint))
                                 {
-                                    _gameServerEndpoint = endpoint;
-                                    _ = ConnectToGameServerAsync();
+                                    endpointFound = true;
+                                    var endpoint = serverEndpoint.GetString();
+                                    Logger.Connection(LogLevel.Info, $"[Client {_clientId}] Received game server endpoint: {endpoint}");
+                                    
+                                    var parts = endpoint.Split(':');
+                                    if (parts.Length == 2 && int.TryParse(parts[1], out int port))
+                                    {
+                                        _gameServerEndpoint = endpoint;
+                                        _ = ConnectToGameServerAsync();
+                                    }
+                                    else
+                                    {
+                                        Logger.Error($"[Client {_clientId}] Invalid endpoint format: {endpoint}");
+                                    }
+                                }
+                                else
+                                {
+                                    Logger.Error($"[Client {_clientId}] Missing ServerEndpoint in success response");
                                 }
                             }
+                            else if (response.TryGetProperty("Error", out var error))
+                            {
+                                Logger.Connection(LogLevel.Warning, $"[Client {_clientId}] Connection failed: {error.GetString()}");
+                            }
+                            
+                            // Debug info if properties were not found
+                            if (!successFound || !endpointFound)
+                            {
+                                Logger.Error($"[Client {_clientId}] Missing expected properties in response. Object: {JsonSerializer.Serialize(response)}");
+                                Logger.Error($"[Client {_clientId}] Property names in response: {string.Join(", ", response.EnumerateObject().Select(p => p.Name))}");
+                            }
                         }
-                        else if (response.TryGetProperty("Error", out var error))
+                        else
                         {
-                            Logger.Connection(LogLevel.Warning, $"[Client {_clientId}] Connection failed: {error.GetString()}");
+                            Logger.Error($"[Client {_clientId}] Invalid response format from master server: {response.ValueKind}");
                         }
                     }
-                    else
+                    catch (Exception ex)
                     {
-                        Logger.Error($"[Client {_clientId}] Invalid response format from master server");
+                        Logger.Error($"[Client {_clientId}] Error processing master server response: {ex.Message}");
+                        if (message.Data != null)
+                        {
+                            Logger.Error($"[Client {_clientId}] Response data: {message.Data}");
+                        }
                     }
                     break;
                     
@@ -146,6 +204,19 @@ namespace ClientSimulator
                 var host = parts[0];
                 var port = int.Parse(parts[1]);
                 
+                Logger.Connection(LogLevel.Info, $"[Client {_clientId}] Attempting to resolve host: {host}");
+                
+                // Try to resolve the host name first to diagnose DNS issues
+                try {
+                    var addresses = await System.Net.Dns.GetHostAddressesAsync(host);
+                    var addressList = string.Join(", ", addresses.Select(a => a.ToString()));
+                    Logger.Connection(LogLevel.Info, $"[Client {_clientId}] Host {host} resolved to: {addressList}");
+                }
+                catch (Exception ex) {
+                    Logger.Error($"[Client {_clientId}] Failed to resolve host {host}: {ex.Message}");
+                    // Continue anyway - the SocketClient will attempt to connect
+                }
+                
                 Logger.Connection(LogLevel.Debug, $"[Client {_clientId}] Connecting to game server at {host}:{port}...");
                 
                 _gameServerClient = new SocketClient(host, port);
@@ -160,7 +231,13 @@ namespace ClientSimulator
                 Logger.Connection(LogLevel.Debug, $"[Client {_clientId}] Connected to game server");
                 
                 // Join the game
-                await _gameServerClient.SendMessageAsync(Message.Create<object>(MessageType.PlayerJoin, new { ClientId = _clientId }));
+                var joinMessage = new Message {
+                    Type = MessageType.PlayerJoin,
+                    Data = JsonSerializer.Serialize(new { ClientId = _clientId })
+                };
+                Logger.Connection(LogLevel.Debug, $"[Client {_clientId}] Join message created with type {joinMessage.Type} and data: {joinMessage.Data}");
+                
+                await _gameServerClient.SendMessageAsync(joinMessage);
                 Logger.Connection(LogLevel.Debug, $"[Client {_clientId}] Sent join request to game server");
             }
             catch (Exception ex)

@@ -7,9 +7,27 @@ using System.Threading;
 using System.Threading.Tasks;
 using Common.Models;
 using Common.Logging;
+using System.Linq;
 
 namespace Common.Networking
 {
+    // Client info class to track client connection details
+    public class ClientInfo
+    {
+        public string ClientId { get; set; }
+        public TcpClient Client { get; set; }
+        public DateTime ConnectedAt { get; set; }
+        public IPEndPoint RemoteEndPoint { get; set; }
+        
+        public ClientInfo(string clientId, TcpClient client)
+        {
+            ClientId = clientId;
+            Client = client;
+            ConnectedAt = DateTime.UtcNow;
+            RemoteEndPoint = client.Client.RemoteEndPoint as IPEndPoint;
+        }
+    }
+    
     public abstract class SocketServer
     {
         protected readonly string _serverName;
@@ -17,7 +35,7 @@ namespace Common.Networking
         protected TcpListener _listener;
         protected bool _isRunning;
         protected CancellationTokenSource _cancellationTokenSource;
-        protected ConcurrentDictionary<string, TcpClient> _clients = new ConcurrentDictionary<string, TcpClient>();
+        protected ConcurrentDictionary<string, ClientInfo> _clients = new ConcurrentDictionary<string, ClientInfo>();
 
         public SocketServer(string serverName, int port)
         {
@@ -49,9 +67,9 @@ namespace Common.Networking
             _isRunning = false;
             _cancellationTokenSource?.Cancel();
             
-            foreach (var client in _clients.Values)
+            foreach (var clientInfo in _clients.Values)
             {
-                client.Close();
+                clientInfo.Client?.Close();
             }
             
             _clients.Clear();
@@ -67,9 +85,12 @@ namespace Common.Networking
                 while (!cancellationToken.IsCancellationRequested)
                 {
                     var client = await _listener.AcceptTcpClientAsync();
-                    var clientId = Guid.NewGuid().ToString();
+                    var remoteEndPoint = client.Client.RemoteEndPoint as System.Net.IPEndPoint;
+                    // Create a more descriptive client ID that includes connection info
+                    var clientId = $"{Guid.NewGuid().ToString().Substring(0, 6)}_{remoteEndPoint?.Address}_{remoteEndPoint?.Port}";
                     
-                    _clients.TryAdd(clientId, client);
+                    var clientInfo = new ClientInfo(clientId, client);
+                    _clients.TryAdd(clientId, clientInfo);
                     
                     _ = HandleClientAsync(clientId, client, cancellationToken);
                 }
@@ -88,10 +109,18 @@ namespace Common.Networking
         {
             try
             {
+                // Make sure we have a ClientInfo for this client
+                if (!_clients.TryGetValue(clientId, out var clientInfo))
+                {
+                    // Add it if it doesn't exist (shouldn't happen, but just in case)
+                    clientInfo = new ClientInfo(clientId, client);
+                    _clients.TryAdd(clientId, clientInfo);
+                }
+                
                 using (client)
                 {
-                    var remoteEndPoint = client.Client.RemoteEndPoint as IPEndPoint;
-                    Logger.Connection(LogLevel.Info, $"Client {clientId.Substring(0, 6)} connected from {remoteEndPoint?.Address}:{remoteEndPoint?.Port}");
+                    var remoteEndPoint = client.Client.RemoteEndPoint as System.Net.IPEndPoint;
+                    Logger.Connection(LogLevel.Info, $"Client {clientId} connected from {remoteEndPoint?.Address}:{remoteEndPoint?.Port}");
                     
                     var buffer = new byte[4096];
                     var stream = client.GetStream();
@@ -99,46 +128,79 @@ namespace Common.Networking
                     
                     while (!cancellationToken.IsCancellationRequested && client.Connected)
                     {
-                        var bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length, cancellationToken);
-                        
-                        if (bytesRead == 0)
-                            break;
-                            
-                        var data = Encoding.UTF8.GetString(buffer, 0, bytesRead);
-                        messageBuilder.Append(data);
-                        
-                        // Process complete messages
-                        var json = messageBuilder.ToString();
-                        var messages = json.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-                        
-                        foreach (var messageJson in messages)
+                        int bytesRead = 0;
+                        try
                         {
-                            if (string.IsNullOrWhiteSpace(messageJson))
-                                continue;
+                            bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length, cancellationToken);
+                            
+                            if (bytesRead == 0)
+                                break;
                                 
-                            try
+                            var data = Encoding.UTF8.GetString(buffer, 0, bytesRead);
+                            
+                            // Debug: Log the raw data received from the client
+                            Logger.Connection(LogLevel.Info, $"RawDataReceived[{bytesRead} bytes] from {clientId}: {data}");
+                            Logger.Connection(LogLevel.Info, $"ByteValues: {string.Join(",", buffer.Take(bytesRead).Select(b => b.ToString()))}");
+                            Logger.Connection(LogLevel.Info, $"Has newline: {data.Contains("\n")}");
+                            
+                            messageBuilder.Append(data);
+                            
+                            // Process complete messages
+                            var json = messageBuilder.ToString();
+                            var messages = json.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+                            
+                            foreach (var messageJson in messages)
                             {
-                                var message = Message.Deserialize(messageJson);
-                                if (message != null)
+                                if (string.IsNullOrWhiteSpace(messageJson))
+                                    continue;
+                                    
+                                Logger.Connection(LogLevel.Debug, $"Processing message from {clientId}: {messageJson}");
+                                
+                                try
                                 {
-                                    await ProcessMessageAsync(clientId, message);
+                                    var message = Message.Deserialize(messageJson);
+                                    if (message != null)
+                                    {
+                                        await ProcessMessageAsync(clientId, message);
+                                        
+                                        // Force a flush of the network stream after sending a response
+                                        if (_clients.TryGetValue(clientId, out var currClientInfo) && currClientInfo?.Client?.GetStream() != null)
+                                        {
+                                            await currClientInfo.Client.GetStream().FlushAsync(cancellationToken);
+                                        }
+                                    }
+                                    else
+                                    {
+                                        Logger.Error($"Received null message from client {clientId}: {messageJson}");
+                                    }
                                 }
-                                else
+                                catch (Exception ex)
                                 {
-                                    Logger.Error($"Received null message from client {clientId.Substring(0, 6)}: {messageJson}");
+                                    Logger.Error($"Error processing message from client {clientId}: {ex.Message}");
+                                    Logger.Error($"Message JSON: {messageJson}");
                                 }
                             }
-                            catch (Exception ex)
+                            
+                            // Keep any remaining partial message
+                            var lastNewline = json.LastIndexOf('\n');
+                            if (lastNewline >= 0)
                             {
-                                Logger.Error($"Error processing message from client {clientId.Substring(0, 6)}", ex);
+                                messageBuilder.Remove(0, lastNewline + 1);
                             }
                         }
-                        
-                        // Keep any remaining partial message
-                        var lastNewline = json.LastIndexOf('\n');
-                        if (lastNewline >= 0)
+                        catch (OperationCanceledException)
                         {
-                            messageBuilder.Remove(0, lastNewline + 1);
+                            break;
+                        }
+                        catch (IOException ex)
+                        {
+                            Logger.Error($"IO error for client {clientId}: {ex.Message}");
+                            break;
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.Error($"Unexpected error for client {clientId}: {ex.Message}");
+                            break;
                         }
                     }
                 }
@@ -146,16 +208,16 @@ namespace Common.Networking
             catch (Exception ex) when (ex is OperationCanceledException || ex is SocketException)
             {
                 // Expected when client disconnects
-                Logger.Connection(LogLevel.Debug, $"Client {clientId.Substring(0, 6)} disconnected due to socket or cancellation: {ex.GetType().Name}");
             }
             catch (Exception ex)
             {
-                Logger.Error($"Error handling client {clientId.Substring(0, 6)}", ex);
+                Logger.Error($"Error handling client {clientId}: {ex.Message}");
+                Logger.Error($"Stack trace: {ex.StackTrace}");
             }
             finally
             {
                 _clients.TryRemove(clientId, out _);
-                Logger.Connection(LogLevel.Info, $"Client {clientId.Substring(0, 6)} disconnected");
+                Logger.Connection(LogLevel.Info, $"Client {clientId} disconnected");
                 await OnClientDisconnectedAsync(clientId);
             }
         }
@@ -175,7 +237,7 @@ namespace Common.Networking
                 return;
             }
 
-            if (!_clients.TryGetValue(clientId, out var client))
+            if (!_clients.TryGetValue(clientId, out var clientInfo))
             {
                 Logger.Connection(LogLevel.Warning, $"Client {clientId.Substring(0, 6)} not found for sending message");
                 return;
@@ -194,8 +256,16 @@ namespace Common.Networking
                 messageJson += "\n";
                 var messageBytes = Encoding.UTF8.GetBytes(messageJson);
                 
-                var stream = client.GetStream();
+                Logger.Connection(LogLevel.Debug, $"Sending to client {clientId.Substring(0, 6)}: Type={message.Type}, Length={messageBytes.Length} bytes");
+                Logger.Connection(LogLevel.Debug, $"Raw message: {messageJson.TrimEnd('\n')}");
+                
+                var stream = clientInfo.Client.GetStream();
                 await stream.WriteAsync(messageBytes, 0, messageBytes.Length);
+                
+                // Force a flush to ensure the message is sent immediately
+                await stream.FlushAsync();
+                
+                Logger.Connection(LogLevel.Debug, $"Successfully sent message to client {clientId.Substring(0, 6)}: Type={message.Type}");
             }
             catch (Exception ex)
             {

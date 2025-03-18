@@ -44,6 +44,13 @@ spec:
         - "100"
         ports:
         - containerPort: 7100
+        env:
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: GAME_SERVER_IP
+          value: "10.109.11.206"  # This is the ClusterIP from kubectl get services
         resources:
           requests:
             cpu: 100m
@@ -52,13 +59,19 @@ spec:
             cpu: 500m
             memory: 256Mi
         livenessProbe:
-          tcpSocket:
-            port: 7100
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - "ls /app/GameServer.dll > /dev/null"
           initialDelaySeconds: 30
           periodSeconds: 10
         readinessProbe:
-          tcpSocket:
-            port: 7100
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - "ls /app/GameServer.dll > /dev/null"
           initialDelaySeconds: 5
           periodSeconds: 10
 ---

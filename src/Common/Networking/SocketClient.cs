@@ -54,9 +54,11 @@ namespace Common.Networking
                 await Task.Delay(100);
                 
                 // Start receiving messages in a separate thread
+                Logger.Connection(LogLevel.Debug, $"Starting message listener thread for {_host}:{_port}");
                 _receiveThread = new Thread(() => HandleMessagesAsync(_cancellationTokenSource.Token).Wait());
                 _receiveThread.Start();
                 
+                Logger.Connection(LogLevel.Debug, $"Calling OnConnectedAsync for {_host}:{_port}");
                 await OnConnectedAsync();
                 Connected?.Invoke(this, EventArgs.Empty);
                 
@@ -178,7 +180,15 @@ namespace Common.Networking
                 messageJson += "\n";
                 var messageBytes = Encoding.UTF8.GetBytes(messageJson);
                 
+                Logger.Connection(LogLevel.Debug, $"Sending message to {_host}:{_port}: {messageBytes.Length} bytes, Type={message.Type}");
+                Logger.Connection(LogLevel.Debug, $"Raw message: {messageJson.TrimEnd('\n')}");
+                
                 await _stream.WriteAsync(messageBytes, 0, messageBytes.Length);
+                
+                // Force flush to ensure the message is sent immediately
+                await _stream.FlushAsync();
+                
+                Logger.Connection(LogLevel.Debug, $"Message sent to {_host}:{_port}: {message.Type}");
             }
             catch (Exception ex)
             {

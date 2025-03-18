@@ -71,9 +71,23 @@ namespace MasterServer
 
         protected override async Task ProcessMessageAsync(string clientId, Message message)
         {
+            Logger.System(LogLevel.Info, $"Processing message from {clientId}: Type={message.Type}, RawData={message.Data}");
+            
+            // Add more debug info for client-related messages
+            if (message.Type == MessageType.ClientConnect || message.Type == MessageType.ClientDisconnect)
+            {
+                try {
+                    var rawJson = Message.Serialize(message);
+                    Logger.Connection(LogLevel.Info, $"Client {clientId} message raw JSON: {rawJson}");
+                }
+                catch (Exception ex) {
+                    Logger.Error($"Error serializing client message: {ex.Message}");
+                }
+            }
+            
             if (message.Type != MessageType.GameServerHeartbeat)
             {
-                Logger.System(LogLevel.Debug, $"Received message from {clientId.Substring(0, 6)}: {message.Type}");
+                Logger.System(LogLevel.Debug, $"Received message from {clientId}: {message.Type}");
             }
             
             switch (message.Type)
@@ -87,6 +101,7 @@ namespace MasterServer
                     break;
                     
                 case MessageType.ClientConnect:
+                    Logger.System(LogLevel.Info, $"Client {clientId} requested connection (ClientConnect)");
                     await HandleClientConnectAsync(clientId, message);
                     break;
                     
@@ -155,10 +170,25 @@ namespace MasterServer
 
         private async Task HandleClientConnectAsync(string clientId, Message message)
         {
-            Logger.Connection(LogLevel.Info, $"Processing client connection request from {clientId.Substring(0, 6)}");
+            Logger.Connection(LogLevel.Info, $"Processing client connection request from {clientId}");
             
             try
             {
+                // Extract client data if provided
+                var requestData = message.GetData<JsonElement>();
+                if (requestData.ValueKind == JsonValueKind.Object && requestData.TryGetProperty("ClientId", out var clientIdProp))
+                {
+                    var clientIdentifier = clientIdProp.GetString();
+                    Logger.Connection(LogLevel.Debug, $"Client identified itself as: {clientIdentifier}");
+                }
+                
+                // Log available servers
+                Logger.Connection(LogLevel.Debug, $"Available game servers: {_gameServers.Count}");
+                foreach (var server in _gameServers.Values)
+                {
+                    Logger.Connection(LogLevel.Debug, $" - Server {server.Id.Substring(0, 6)}: Endpoint={server.Endpoint}, Players={server.CurrentPlayers}/{server.MaxPlayers}, Available={server.IsAvailable}");
+                }
+                
                 // Find the game server with the least number of players
                 var bestServer = _gameServers.Values
                     .Where(s => s.IsAvailable)
@@ -167,7 +197,7 @@ namespace MasterServer
                     
                 if (bestServer == null)
                 {
-                    Logger.Connection(LogLevel.Warning, "No available game servers for client connection");
+                    Logger.Connection(LogLevel.Warning, $"No available game servers for client {clientId}");
                     await SendMessageAsync(clientId, Message.Create<object>(MessageType.ClientConnect, new { Success = false, Error = "No available game servers" }));
                     return;
                 }
@@ -176,16 +206,22 @@ namespace MasterServer
                 
                 // Send the game server info to the client
                 var response = new { Success = true, ServerEndpoint = bestServer.Endpoint };
-                Logger.Connection(LogLevel.Debug, $"Sending success response to client {clientId.Substring(0, 6)}: {JsonSerializer.Serialize(response)}");
+                var responseJson = JsonSerializer.Serialize(response);
+                Logger.Connection(LogLevel.Info, $"Sending success response to client {clientId}: {responseJson}");
                 
                 await SendMessageAsync(clientId, Message.Create<object>(MessageType.ClientConnect, response));
                 
-                Logger.Connection(LogLevel.Info, $"Client {clientId.Substring(0, 6)} routed to game server {bestServer.Id.Substring(0, 6)} at {bestServer.Endpoint}");
+                // Log the raw message being sent to help debug
+                var rawMessage = Message.Create<object>(MessageType.ClientConnect, response);
+                var serializedMessage = Message.Serialize(rawMessage);
+                Logger.Connection(LogLevel.Info, $"Raw message being sent: {serializedMessage}");
+                
+                Logger.Connection(LogLevel.Info, $"Client {clientId} routed to game server {bestServer.Id.Substring(0, 6)} at {bestServer.Endpoint}");
             }
             catch (Exception ex)
             {
-                Logger.Error($"Error handling client connection request", ex);
-                await SendMessageAsync(clientId, Message.Create<object>(MessageType.ClientConnect, new { Success = false, Error = "Internal server error" }));
+                Logger.Error($"Error handling client connection request from {clientId}: {ex.Message}");
+                await SendMessageAsync(clientId, Message.Create<object>(MessageType.ClientConnect, new { Success = false, Error = $"Internal server error: {ex.Message}" }));
             }
         }
 
@@ -212,26 +248,83 @@ namespace MasterServer
                     
                     var buffer = new byte[4096];
                     var stream = client.GetStream();
+                    var messageBuilder = new StringBuilder();
                     
                     while (!cancellationToken.IsCancellationRequested && client.Connected)
                     {
-                        var bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length, cancellationToken);
-                        
-                        if (bytesRead == 0)
-                            break;
-                            
-                        var messageJson = Encoding.UTF8.GetString(buffer, 0, bytesRead);
-                        Logger.Connection(LogLevel.Debug, $"Received message from {clientId}: {messageJson}");
-                        
+                        int bytesRead = 0;
                         try
                         {
-                            var message = Message.Deserialize(messageJson);
-                            await ProcessMessageAsync(clientId, message);
+                            bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length, cancellationToken);
+                            
+                            if (bytesRead == 0)
+                                break;
+                                
+                            var data = Encoding.UTF8.GetString(buffer, 0, bytesRead);
+                            
+                            // Debug: Log the raw data received from the client
+                            Logger.Connection(LogLevel.Info, $"RawDataReceived[{bytesRead} bytes] from {clientId}: {data}");
+                            Logger.Connection(LogLevel.Info, $"ByteValues: {string.Join(",", buffer.Take(bytesRead).Select(b => b.ToString()))}");
+                            Logger.Connection(LogLevel.Info, $"Has newline: {data.Contains("\n")}");
+                            
+                            messageBuilder.Append(data);
+                            
+                            // Process complete messages
+                            var json = messageBuilder.ToString();
+                            var messages = json.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+                            
+                            foreach (var messageJson in messages)
+                            {
+                                if (string.IsNullOrWhiteSpace(messageJson))
+                                    continue;
+                                    
+                                Logger.Connection(LogLevel.Debug, $"Processing message from {clientId}: {messageJson}");
+                                
+                                try
+                                {
+                                    var message = Message.Deserialize(messageJson);
+                                    if (message != null)
+                                    {
+                                        await ProcessMessageAsync(clientId, message);
+                                        
+                                        // Force a flush of the network stream after sending a response
+                                        if (_clients.TryGetValue(clientId, out var clientInfo) && clientInfo?.Client?.GetStream() != null)
+                                        {
+                                            await clientInfo.Client.GetStream().FlushAsync(cancellationToken);
+                                        }
+                                    }
+                                    else
+                                    {
+                                        Logger.Error($"Received null message from client {clientId}: {messageJson}");
+                                    }
+                                }
+                                catch (Exception ex)
+                                {
+                                    Logger.Error($"Error processing message from client {clientId}: {ex.Message}");
+                                    Logger.Error($"Message JSON: {messageJson}");
+                                }
+                            }
+                            
+                            // Keep any remaining partial message
+                            var lastNewline = json.LastIndexOf('\n');
+                            if (lastNewline >= 0)
+                            {
+                                messageBuilder.Remove(0, lastNewline + 1);
+                            }
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            break;
+                        }
+                        catch (IOException ex)
+                        {
+                            Logger.Error($"IO error for client {clientId}: {ex.Message}");
+                            break;
                         }
                         catch (Exception ex)
                         {
-                            Logger.Error($"Error processing message: {ex.Message}");
-                            Logger.Error($"Stack trace: {ex.StackTrace}");
+                            Logger.Error($"Unexpected error for client {clientId}: {ex.Message}");
+                            break;
                         }
                     }
                 }

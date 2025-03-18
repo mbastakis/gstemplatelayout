@@ -6,6 +6,7 @@ using Common.Logging;
 using Common.Models;
 using Common.Networking;
 using System.Text.Json;
+using System.Linq;
 
 namespace GameServer
 {
@@ -79,11 +80,14 @@ namespace GameServer
                     await _masterServerClient.ConnectAsync();
                     Logger.Connection(LogLevel.Info, "Successfully connected to master server");
                     
-                    // Register with master server
+                    // Register with master server - use the service name which should be resolvable by all pods
+                    string gameServerEndpoint = "game-server:7100";
+                    Logger.Connection(LogLevel.Info, $"Using service name for registration: {gameServerEndpoint}");
+                    
                     var registrationData = new GameServerRegistrationData
                     {
                         ServerId = _serverId,
-                        Endpoint = $"{Environment.MachineName}:{_port}",
+                        Endpoint = gameServerEndpoint,
                         MaxPlayers = _maxPlayers
                     };
                     
@@ -140,11 +144,21 @@ namespace GameServer
             
             try
             {
+                Logger.Connection(LogLevel.Info, $"Reconnecting to master server at {_masterServerHost}:{_masterServerPort}...");
                 await ConnectToMasterServerAsync();
+                Logger.Connection(LogLevel.Info, "Successfully reconnected to master server and re-registered as {_serverId.Substring(0, 6)}");
             }
             catch (Exception ex)
             {
-                Logger.Error("Failed to reconnect to master server", ex);
+                Logger.Error($"Failed to reconnect to master server: {ex.Message}", ex);
+                
+                // Schedule another reconnection attempt
+                _ = Task.Run(async () => 
+                {
+                    Logger.Connection(LogLevel.Info, "Scheduling another reconnection attempt in 10 seconds...");
+                    await Task.Delay(10000);
+                    await ConnectToMasterServerAsync();
+                });
             }
         }
 
@@ -305,6 +319,43 @@ namespace GameServer
         {
             Logger.Connection(LogLevel.Info, $"Client {clientId.Substring(0, 6)} disconnected from game server");
             await HandlePlayerLeaveAsync(clientId);
+        }
+
+        // Helper method to get pod IP if running in Kubernetes
+        private string GetPodIp()
+        {
+            try
+            {
+                // In Kubernetes, this env var contains the pod IP
+                var podIp = Environment.GetEnvironmentVariable("POD_IP");
+                if (!string.IsNullOrEmpty(podIp))
+                {
+                    return podIp;
+                }
+                
+                // Try to get the IP address directly
+                var hostEntry = System.Net.Dns.GetHostEntry(Environment.MachineName);
+                if (hostEntry.AddressList.Length > 0)
+                {
+                    // Prefer IPv4 address
+                    var ipv4Address = hostEntry.AddressList
+                        .FirstOrDefault(ip => ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork);
+                    
+                    if (ipv4Address != null)
+                    {
+                        return ipv4Address.ToString();
+                    }
+                    
+                    // Fall back to any address
+                    return hostEntry.AddressList[0].ToString();
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error determining pod IP: {ex.Message}");
+            }
+            
+            return null;
         }
     }
 

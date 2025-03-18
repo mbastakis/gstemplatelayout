@@ -128,4 +128,5 @@ The project includes a basic Prometheus and Grafana setup for monitoring the Kub
 - Implement custom metrics for scaling based on player count
 - Add authentication and authorization
 - Implement game state persistence
-- Add WebSocket support for browser clients 
+- Add WebSocket support for browser clients  
+- Configure k8s for GameServer dependency on master server 

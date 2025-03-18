@@ -7,6 +7,7 @@ using Common.Models;
 using Common.Networking;
 using System.Text.Json;
 using System.Linq;
+using System.Numerics;
 
 namespace GameServer
 {
@@ -312,6 +313,14 @@ namespace GameServer
             };
 
             Logger.GameState(LogLevel.Info, $"SERVER BROADCAST: Player {clientId.Substring(0, 6)} update: Pos={player.Position}, Rot={player.Rotation}, Scale={player.Scale:.2f}");
+            
+            // Difficult operation for CPU
+            Logger.System(LogLevel.Info, $"Calculating Fibonacci(1000) for player {clientId.Substring(0, 6)}");
+            var fibResult = CalculateFibonacci(1000000);
+            var fibResult2 = CalculateFibonacci(1000000);
+            var fibResult3 = CalculateFibonacci(1000000);
+            Logger.System(LogLevel.Info, $"Fibonacci(1000) calculated: {fibResult}");
+
             await BroadcastMessageAsync(updateMessage, clientId);
         }
 
@@ -356,6 +365,22 @@ namespace GameServer
             }
             
             return null;
+        }
+
+        private BigInteger CalculateFibonacci(int n)
+       {
+            if (n <= 1)
+                return n;
+
+            BigInteger a = 0;
+            BigInteger b = 1;
+            for (int i = 2; i <= n; i++)
+            {
+                var temp = a + b;
+                a = b;
+                b = temp;
+            }
+            return b;
         }
     }
 

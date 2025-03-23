@@ -131,7 +131,15 @@ namespace Common.Networking
                     }
                     else if (response.TryGetProperty("Error", out JsonElement errorProp))
                     {
-                        Logger.Error($"Failed to join game server: {errorProp.GetString()}");
+                        string error = errorProp.GetString();
+                        Logger.Error($"Failed to join game server: {error}");
+                        
+                        // If server is full, reconnect to master server and try again
+                        if (error != null && error.Contains("Server is full"))
+                        {
+                            Logger.Connection(LogLevel.Info, $"Server full, attempting to find another server...");
+                            await ReconnectToMasterServerAsync();
+                        }
                     }
                     break;
                     
@@ -229,6 +237,32 @@ namespace Common.Networking
             catch (Exception ex)
             {
                 Logger.Error($"Error disconnecting client {ClientId.Substring(0, 6)}", ex);
+            }
+        }
+
+        private async Task ReconnectToMasterServerAsync()
+        {
+            try
+            {
+                Logger.Connection(LogLevel.Info, $"Client {ClientId.Substring(0, 6)} reconnecting to master server");
+                
+                // Disconnect from current game server
+                _gameServerConnection?.Disconnect();
+                _connectedToGameServer = false;
+                
+                // Connect to master server
+                base.Disconnect();
+                await base.ConnectAsync();
+                
+                // OnConnectedAsync will automatically send ClientConnect to the master server
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error reconnecting to master server: {ex.Message}");
+                
+                // Schedule a retry after a delay
+                await Task.Delay(5000);
+                await ReconnectToMasterServerAsync();
             }
         }
     }

@@ -237,7 +237,12 @@ namespace GameServer
                 if (_players.Count >= _maxPlayers)
                 {
                     Logger.GameState(LogLevel.Warning, $"Server is full, rejecting player {clientId.Substring(0, 6)}");
-                    await SendMessageAsync(clientId, Message.Create<object>(MessageType.PlayerJoin, new { Success = false, Error = "Server is full" }));
+                    var failResponse = new PlayerJoinResponse
+                    {
+                        Success = false,
+                        Error = "Server is full"
+                    };
+                    await SendMessageAsync(clientId, Message.Create<PlayerJoinResponse>(MessageType.PlayerJoin, failResponse));
                     return;
                 }
                 
@@ -252,82 +257,148 @@ namespace GameServer
                 
                 _players[clientId] = playerInfo;
                 
-                Logger.GameState(LogLevel.Info, $"Player {clientId.Substring(0, 6)} joined. Total players: {_players.Count}");
+                // Notify the player that they've joined successfully
+                var response = new PlayerJoinResponse
+                {
+                    Success = true
+                };
+                await SendMessageAsync(clientId, Message.Create<PlayerJoinResponse>(MessageType.PlayerJoin, response));
                 
-                // Notify the player they've joined successfully
-                var response = new { Success = true };
-                Logger.Connection(LogLevel.Debug, $"Sending success response to player {clientId.Substring(0, 6)}: {JsonSerializer.Serialize(response)}");
+                // Notify all other players that a new player has joined
+                var notification = new PlayerJoinNotification
+                {
+                    PlayerId = clientId
+                };
+                await BroadcastMessageAsync(Message.Create<PlayerJoinNotification>(MessageType.PlayerJoin, notification), clientId);
                 
-                await SendMessageAsync(clientId, Message.Create<object>(MessageType.PlayerJoin, response));
-                
-                // Notify all other players about the new player
-                await BroadcastMessageAsync(Message.Create<object>(MessageType.PlayerJoin, new { PlayerId = clientId }), clientId);
+                Logger.GameState(LogLevel.Info, $"Player {clientId.Substring(0, 6)} joined successfully");
             }
             catch (Exception ex)
             {
-                Logger.Error($"Error handling player join request", ex);
-                await SendMessageAsync(clientId, Message.Create<object>(MessageType.PlayerJoin, new { Success = false, Error = "Internal server error" }));
+                Logger.Error($"Error processing player join: {ex.Message}", ex);
+                var failResponse = new PlayerJoinResponse
+                {
+                    Success = false,
+                    Error = "Internal server error"
+                };
+                await SendMessageAsync(clientId, Message.Create<PlayerJoinResponse>(MessageType.PlayerJoin, failResponse));
             }
         }
 
-        private async Task HandlePlayerLeaveAsync(string clientId)
+        private async Task HandlePlayerDisconnectAsync(string clientId)
         {
             if (_players.TryRemove(clientId, out _))
             {
-                Logger.GameState(LogLevel.Info, $"Player {clientId.Substring(0, 6)} left. Total players: {_players.Count}");
+                Logger.GameState(LogLevel.Info, $"Player {clientId.Substring(0, 6)} disconnected. Total players: {_players.Count}");
                 
                 // Notify all other players
-                await BroadcastMessageAsync(Message.Create<object>(MessageType.PlayerLeave, new { PlayerId = clientId }));
+                var notification = new PlayerLeaveNotification
+                {
+                    PlayerId = clientId
+                };
+                await BroadcastMessageAsync(Message.Create<PlayerLeaveNotification>(MessageType.PlayerLeave, notification));
             }
         }
 
         private async Task HandlePlayerActionAsync(string clientId, PlayerAction action)
         {
-            if (!_players.TryGetValue(clientId, out var player))
+            try
             {
-                Logger.System(LogLevel.Warning, $"Received action from unknown player {clientId.Substring(0, 6)}");
-                return;
+                if (!_players.TryGetValue(clientId, out var playerInfo))
+                {
+                    Logger.Error($"Received action from unknown player {clientId.Substring(0, 6)}");
+                    return;
+                }
+
+                // Simulate intensive game server operations
+                await SimulateGameServerLoadAsync();
+
+                // Update player state based on action
+                switch (action.Type)
+                {
+                    case ActionType.Move:
+                        playerInfo.Position += action.Value * 0.1f;
+                        break;
+                    case ActionType.Rotate:
+                        playerInfo.Rotation += action.Value * 0.1f;
+                        break;
+                    case ActionType.Scale:
+                        playerInfo.Scale = Math.Max(0.1f, Math.Min(2.0f, playerInfo.Scale + action.Value * 0.01f));
+                        break;
+                }
+
+                // Broadcast updated state to all players
+                var update = new PlayerUpdateMessage
+                {
+                    PlayerId = clientId,
+                    Position = playerInfo.Position,
+                    Rotation = playerInfo.Rotation,
+                    Scale = playerInfo.Scale
+                };
+
+                await BroadcastMessageAsync(Message.Create<PlayerUpdateMessage>(MessageType.PlayerUpdate, update));
+                
+                // Also send a GameStateUpdate for more detailed state information
+                var stateUpdate = new GameStateUpdate
+                {
+                    PlayerId = clientId,
+                    Position = playerInfo.Position,
+                    Rotation = playerInfo.Rotation,
+                    Scale = playerInfo.Scale
+                };
+
+                await BroadcastMessageAsync(Message.Create<GameStateUpdate>(MessageType.GameStateUpdate, stateUpdate));
             }
-
-            // Process the action
-            Logger.GameState(LogLevel.Info, $"SERVER RECEIVED: Action from {clientId.Substring(0, 6)}: {action.Type}={action.Value}");
-            
-            switch (action.Type)
+            catch (Exception ex)
             {
-                case ActionType.Move:
-                    player.Position += action.Value;
-                    break;
-                case ActionType.Rotate:
-                    player.Rotation += action.Value;
-                    break;
-                case ActionType.Scale:
-                    player.Scale *= (1 + action.Value / 100.0f);
-                    break;
+                Logger.Error($"Error handling player action: {ex.Message}", ex);
             }
+        }
 
-            // Broadcast the updated player state to all other players
-            var updateMessage = new Message
+        private async Task SimulateGameServerLoadAsync()
+        {
+            // Simulate physics calculations
+            for (int i = 0; i < 1000; i++)
             {
-                Type = MessageType.PlayerUpdate,
-                Data = JsonSerializer.Serialize(player)
-            };
-
-            Logger.GameState(LogLevel.Info, $"SERVER BROADCAST: Player {clientId.Substring(0, 6)} update: Pos={player.Position}, Rot={player.Rotation}, Scale={player.Scale:.2f}");
-            
-            // Difficult operation for CPU
-            Logger.System(LogLevel.Info, $"Calculating Fibonacci(1000) for player {clientId.Substring(0, 6)}");
-            var fibResult = CalculateFibonacci(1000000);
-            var fibResult2 = CalculateFibonacci(1000000);
-            var fibResult3 = CalculateFibonacci(1000000);
-            Logger.System(LogLevel.Info, $"Fibonacci(1000) calculated: {fibResult}");
-
-            await BroadcastMessageAsync(updateMessage, clientId);
+                // Simulate collision detection
+                foreach (var player1 in _players.Values)
+                {
+                    foreach (var player2 in _players.Values)
+                    {
+                        if (player1 == player2) continue;
+                        
+                        // Calculate distance between players
+                        float dx = player1.Position - player2.Position;
+                        float distance = Math.Abs(dx);
+                        
+                        // Simulate collision response
+                        if (distance < 1.0f)
+                        {
+                            float overlap = 1.0f - distance;
+                            player1.Position += overlap * 0.5f;
+                            player2.Position -= overlap * 0.5f;
+                        }
+                    }
+                }
+                
+                // Simulate state updates
+                foreach (var player in _players.Values)
+                {
+                    // Update player physics
+                    player.Position += 0.001f; // Simulate constant movement
+                    player.Rotation += 0.001f; // Simulate constant rotation
+                    
+                    // Clamp values to reasonable ranges
+                    player.Position = Math.Max(-100f, Math.Min(100f, player.Position));
+                    player.Rotation = player.Rotation % 360f;
+                }
+            }
         }
 
         protected override async Task OnClientDisconnectedAsync(string clientId)
         {
             Logger.Connection(LogLevel.Info, $"Client {clientId.Substring(0, 6)} disconnected from game server");
-            await HandlePlayerLeaveAsync(clientId);
+            await HandlePlayerDisconnectAsync(clientId);
         }
 
         // Helper method to get pod IP if running in Kubernetes

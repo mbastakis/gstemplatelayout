@@ -22,6 +22,7 @@ namespace Common.Models
         
         // GameServer to Client messages
         PlayerUpdate,
+        GameStateUpdate,
         
         // GameServer to Master messages
         GameServerHeartbeat,

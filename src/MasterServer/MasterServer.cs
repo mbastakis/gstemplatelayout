@@ -110,7 +110,12 @@ namespace MasterServer
             if (registrationData == null)
             {
                 Logger.Error($"Invalid game server registration data from {clientId.Substring(0, 6)}");
-                await SendMessageAsync(clientId, Message.Create<object>(MessageType.RegisterGameServer, new { Success = false, Error = "Invalid registration data" }));
+                var failResponse = new GameServerRegistrationResponse
+                {
+                    Success = false,
+                    Error = "Invalid registration data"
+                };
+                await SendMessageAsync(clientId, Message.Create<GameServerRegistrationResponse>(MessageType.RegisterGameServer, failResponse));
                 return;
             }
             
@@ -129,7 +134,11 @@ namespace MasterServer
             Logger.Connection(LogLevel.Info, $"Game server registered: {gameServer.Id.Substring(0, 6)} at {gameServer.Endpoint}");
             
             // Acknowledge registration
-            await SendMessageAsync(clientId, Message.Create<object>(MessageType.RegisterGameServer, new { Success = true }));
+            var response = new GameServerRegistrationResponse
+            {
+                Success = true
+            };
+            await SendMessageAsync(clientId, Message.Create<GameServerRegistrationResponse>(MessageType.RegisterGameServer, response));
             Logger.Connection(LogLevel.Debug, $"Registration acknowledgment sent to {clientId.Substring(0, 6)}");
         }
 
@@ -163,9 +172,11 @@ namespace MasterServer
             {
                 // Extract client data if provided
                 var requestData = message.GetData<JsonElement>();
+                string clientIdentifier = null;
+                
                 if (requestData.ValueKind == JsonValueKind.Object && requestData.TryGetProperty("ClientId", out var clientIdProp))
                 {
-                    var clientIdentifier = clientIdProp.GetString();
+                    clientIdentifier = clientIdProp.GetString();
                     Logger.Connection(LogLevel.Debug, $"Client identified itself as: {clientIdentifier}");
                 }
                 
@@ -185,25 +196,38 @@ namespace MasterServer
                 if (bestServer == null)
                 {
                     Logger.Connection(LogLevel.Warning, $"No available game servers for client {clientId}");
-                    await SendMessageAsync(clientId, Message.Create<object>(MessageType.ClientConnect, new { Success = false, Error = "No available game servers" }));
+                    var failResponse = new ClientConnectResponse
+                    {
+                        Success = false,
+                        Error = "No available game servers"
+                    };
+                    await SendMessageAsync(clientId, Message.Create<ClientConnectResponse>(MessageType.ClientConnect, failResponse));
                     return;
                 }
                 
                 _clientToGameServerMap[clientId] = bestServer.Id;
                 
                 // Send the game server info to the client
-                var response = new { Success = true, ServerEndpoint = bestServer.Endpoint };
-                var responseJson = JsonSerializer.Serialize(response);
-                Logger.Connection(LogLevel.Info, $"Sending success response to client {clientId}: {responseJson}");
+                var response = new ClientConnectResponse
+                {
+                    Success = true,
+                    ServerEndpoint = bestServer.Endpoint
+                };
                 
-                await SendMessageAsync(clientId, Message.Create<object>(MessageType.ClientConnect, response));
+                Logger.Connection(LogLevel.Info, $"Sending success response to client {clientId}: {response}");
+                await SendMessageAsync(clientId, Message.Create<ClientConnectResponse>(MessageType.ClientConnect, response));
                 
                 Logger.Connection(LogLevel.Info, $"Client {clientId} routed to game server {bestServer.Id.Substring(0, 6)} at {bestServer.Endpoint}");
             }
             catch (Exception ex)
             {
                 Logger.Error($"Error handling client connection request from {clientId}: {ex.Message}");
-                await SendMessageAsync(clientId, Message.Create<object>(MessageType.ClientConnect, new { Success = false, Error = $"Internal server error: {ex.Message}" }));
+                var failResponse = new ClientConnectResponse
+                {
+                    Success = false,
+                    Error = $"Internal server error: {ex.Message}"
+                };
+                await SendMessageAsync(clientId, Message.Create<ClientConnectResponse>(MessageType.ClientConnect, failResponse));
             }
         }
 

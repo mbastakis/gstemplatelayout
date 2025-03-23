@@ -25,4 +25,17 @@ namespace Common.Models
         public string Endpoint { get; set; }
         public int MaxPlayers { get; set; }
     }
+    
+    public class GameServerRegistrationResponse
+    {
+        public bool Success { get; set; }
+        public string Error { get; set; }
+        
+        public override string ToString()
+        {
+            return Success 
+                ? "Registration successful" 
+                : $"Registration failed: {Error}";
+        }
+    }
 } 

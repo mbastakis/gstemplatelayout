@@ -104,6 +104,7 @@ echo "Restart client simulators: kubectl rollout restart deployment client-simul
 # Add Grafana dashboard info
 echo ""
 echo "==== MONITORING DASHBOARD ===="
-echo "Grafana URL: http://$(kubectl get svc -n $MONITORING_NAMESPACE grafana -o jsonpath='{.status.loadBalancer.ingress[0].ip}'):3000"
+echo "Grafana URL: http://localhost:3000 (after running port-forward)"
+echo "You can access Grafana by running: kubectl port-forward svc/prometheus-stack-grafana 3000:80 -n monitoring"
 echo "Grafana username: admin"
-echo "Grafana password: $(kubectl get secret -n $MONITORING_NAMESPACE grafana -o jsonpath="{.data.admin-password}" | base64 --decode)"
+echo "Grafana password: prom-operator"

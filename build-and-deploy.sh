@@ -108,8 +108,24 @@ done
 kubectl apply -f k8s/master-server.yaml -n $NAMESPACE
 kubectl apply -f k8s/game-server.yaml -n $NAMESPACE
 
+# Prompt user to deploy client simulator
+echo ""
+echo "Do you want to deploy the client simulator? (Y/N)"
+read -r DEPLOY_CLIENT_SIMULATOR
+if [[ "$DEPLOY_CLIENT_SIMULATOR" =~ ^[Yy]$ ]]; then
+    echo "Deploying client simulator with 55 clients..."
+    kubectl apply -f k8s/client-simulator.yaml -n $NAMESPACE
+    echo "Client simulator deployed successfully!"
+    echo "To scale the client simulator deployment (e.g., to 5 replicas):"
+    echo "kubectl scale deployment client-simulator -n $NAMESPACE --replicas=5"
+else
+    echo "Skipping client simulator deployment."
+    echo "To deploy client simulator later: kubectl apply -f k8s/client-simulator.yaml -n $NAMESPACE"
+    echo "To scale the client simulator deployment (e.g., to 5 replicas):"
+    echo "kubectl scale deployment client-simulator -n $NAMESPACE --replicas=5"
+fi
+
 echo "Deployment completed successfully!"
-echo "To deploy client simulator: kubectl apply -f k8s/client-simulator.yaml -n $NAMESPACE"
 echo "To monitor game server scaling: kubectl get hpa game-server-hpa -n $NAMESPACE --watch"
 
 # Add more helpful commands for monitoring

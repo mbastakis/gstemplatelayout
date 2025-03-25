@@ -5,7 +5,7 @@ metadata:
   labels:
     app: client-simulator
 spec:
-  replicas: 5
+  replicas: 1
   selector:
     matchLabels:
       app: client-simulator
@@ -24,7 +24,7 @@ spec:
             - "--master-port"
             - "7000"
             - "--num-clients"
-            - "50"
+            - "55"
             - "--action-interval"
             - "500"
           resources:

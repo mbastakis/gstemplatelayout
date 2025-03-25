@@ -9,6 +9,7 @@ using System.Net.Sockets;
 using System.Text;
 using Common.Logging;
 using System.Text.Json;
+using System.Net;
 
 namespace MasterServer
 {
@@ -19,6 +20,7 @@ namespace MasterServer
         private Timer _heartbeatCheckTimer;
         private readonly TimeSpan _heartbeatTimeout = TimeSpan.FromSeconds(30);
         private string _lastGameServerStatus = string.Empty;
+        private HealthServer _healthServer;
 
         public MasterServer(int port) : base("MasterServer", port)
         {
@@ -31,13 +33,45 @@ namespace MasterServer
             await base.Start();
             
             _heartbeatCheckTimer = new Timer(CheckGameServerHeartbeats, null, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(10));
+            
+            // Start health check server
+            StartHealthServer();
+            
+            // After everything is initialized, mark as ready
+            _healthServer.IsReady = true;
+            Logger.System(LogLevel.Info, "Master Server is ready to accept connections");
         }
 
         public override void Stop()
         {
             _heartbeatCheckTimer?.Dispose();
             base.Stop();
+            
+            // Stop health server
+            _healthServer?.Stop();
+            _healthServer?.Dispose();
+            
             Logger.System(LogLevel.Info, "Master Server stopped");
+        }
+        
+        private void StartHealthServer()
+        {
+            try
+            {
+                _healthServer = new HealthServer("MasterServer", 8080);
+                _healthServer.IsRunning = true;
+                
+                // Set additional status information
+                _healthServer.GetAdditionalStatus = () => 
+                    $"Connected Clients: {_clients.Count}\n" +
+                    $"Registered Game Servers: {_gameServers.Count}";
+                
+                _healthServer.Start();
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Failed to start health check server: {ex.Message}", ex);
+            }
         }
 
         private void CheckGameServerHeartbeats(object state)

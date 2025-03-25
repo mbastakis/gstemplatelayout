@@ -8,6 +8,8 @@ using Common.Networking;
 using System.Text.Json;
 using System.Linq;
 using System.Numerics;
+using System.Net;
+using System.Text;
 
 namespace GameServer
 {
@@ -20,6 +22,9 @@ namespace GameServer
         private SocketClient _masterServerClient;
         private Timer _heartbeatTimer;
         private readonly ConcurrentDictionary<string, PlayerInfo> _players = new ConcurrentDictionary<string, PlayerInfo>();
+        private HealthServer _healthServer;
+        private bool _masterServerConnected = false;
+        private bool _registrationSuccess = false;
 
         public GameServer(int port, string masterServerHost, int masterServerPort, int maxPlayers = 100) 
             : base("GameServer", port)
@@ -38,14 +43,19 @@ namespace GameServer
             {
                 Logger.System(LogLevel.Info, "Starting Game Server...");
                 await base.Start();
-                Logger.System(LogLevel.Info, "Base server started successfully");
+                
+                // Start health check server
+                StartHealthServer();
                 
                 Logger.Connection(LogLevel.Info, "Attempting to connect to master server...");
                 await ConnectToMasterServerAsync();
                 Logger.Connection(LogLevel.Info, "Successfully connected to master server");
+                _masterServerConnected = true;
                 
                 _heartbeatTimer = new Timer(SendHeartbeat, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
                 Logger.System(LogLevel.Info, "Heartbeat timer started");
+                
+                Logger.System(LogLevel.Info, "Game Server is ready");
             }
             catch (Exception ex)
             {
@@ -59,8 +69,36 @@ namespace GameServer
         {
             _heartbeatTimer?.Dispose();
             _masterServerClient?.Dispose();
+            
+            // Stop health server
+            _healthServer?.Stop();
+            _healthServer?.Dispose();
+            
             base.Stop();
             Logger.System(LogLevel.Info, "Game server stopped");
+        }
+        
+        private void StartHealthServer()
+        {
+            try
+            {
+                _healthServer = new HealthServer("GameServer", 8081);
+                _healthServer.IsRunning = true;
+                
+                // Set additional status information
+                _healthServer.GetAdditionalStatus = () => 
+                    $"Server ID: {_serverId.Substring(0, 6)}\n" +
+                    $"Connected to Master: {_masterServerConnected}\n" +
+                    $"Registration Success: {_registrationSuccess}\n" +
+                    $"Players: {_players.Count}/{_maxPlayers}\n" +
+                    $"Connected Clients: {_clients.Count}";
+                
+                _healthServer.Start();
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Failed to start health check server: {ex.Message}", ex);
+            }
         }
 
         private async Task ConnectToMasterServerAsync()
@@ -127,6 +165,11 @@ namespace GameServer
                     // Registration acknowledgment
                     var response = message.GetData<dynamic>();
                     var success = response.GetProperty("Success").GetBoolean();
+                    _registrationSuccess = success;
+                    
+                    // Update health check readiness based on registration success
+                    _healthServer.IsReady = success && _masterServerConnected;
+                    
                     Logger.Connection(LogLevel.Info, $"Registration response: {(success ? "Success" : "Failed")}");
                     break;
                     
@@ -138,6 +181,12 @@ namespace GameServer
 
         private async void OnMasterServerDisconnected(object sender, EventArgs e)
         {
+            _masterServerConnected = false;
+            _registrationSuccess = false;
+            
+            // Update health check readiness
+            _healthServer.IsReady = false;
+            
             Logger.Connection(LogLevel.Warning, "Disconnected from master server. Attempting to reconnect...");
             
             // Wait a bit before reconnecting
@@ -147,6 +196,7 @@ namespace GameServer
             {
                 Logger.Connection(LogLevel.Info, $"Reconnecting to master server at {_masterServerHost}:{_masterServerPort}...");
                 await ConnectToMasterServerAsync();
+                _masterServerConnected = true;
                 Logger.Connection(LogLevel.Info, "Successfully reconnected to master server and re-registered as {_serverId.Substring(0, 6)}");
             }
             catch (Exception ex)
@@ -159,6 +209,7 @@ namespace GameServer
                     Logger.Connection(LogLevel.Info, "Scheduling another reconnection attempt in 10 seconds...");
                     await Task.Delay(10000);
                     await ConnectToMasterServerAsync();
+                    _masterServerConnected = true;
                 });
             }
         }

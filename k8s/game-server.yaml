@@ -11,6 +11,9 @@ spec:
   - port: 7100
     targetPort: 7100
     name: tcp
+  - port: 8081
+    targetPort: 8081
+    name: health
   type: ClusterIP
 ---
 apiVersion: apps/v1
@@ -29,6 +32,10 @@ spec:
       labels:
         app: game-server
     spec:
+      initContainers:
+      - name: wait-for-master-server
+        image: curlimages/curl:latest
+        command: ['sh', '-c', 'echo "Waiting for master-server to be ready..."; until curl -s http://master-server:8080/ready > /dev/null && curl -s http://master-server:8080/ready | grep -q "Ready"; do echo "$(date) - waiting for master-server:8080/ready..."; sleep 2; done; echo "Master server is ready!"']
       containers:
       - name: game-server
         image: localhost:5000/game-server:latest
@@ -44,13 +51,12 @@ spec:
         - "100"
         ports:
         - containerPort: 7100
+        - containerPort: 8081  # Health check endpoint
         env:
         - name: POD_IP
           valueFrom:
             fieldRef:
               fieldPath: status.podIP
-        - name: GAME_SERVER_IP
-          value: "10.109.11.206"  # This is the ClusterIP from kubectl get services
         resources:
           requests:
             cpu: 100m
@@ -59,19 +65,15 @@ spec:
             cpu: 500m
             memory: 256Mi
         livenessProbe:
-          exec:
-            command:
-            - /bin/sh
-            - -c
-            - "ls /app/GameServer.dll > /dev/null"
+          httpGet:
+            path: /health
+            port: 8081
           initialDelaySeconds: 30
           periodSeconds: 10
         readinessProbe:
-          exec:
-            command:
-            - /bin/sh
-            - -c
-            - "ls /app/GameServer.dll > /dev/null"
+          httpGet:
+            path: /ready
+            port: 8081
           initialDelaySeconds: 5
           periodSeconds: 10
 ---

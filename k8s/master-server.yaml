@@ -11,6 +11,9 @@ spec:
   - port: 7000
     targetPort: 7000
     name: tcp
+  - port: 8080
+    targetPort: 8080
+    name: health
   type: ClusterIP
 ---
 apiVersion: apps/v1
@@ -35,6 +38,7 @@ spec:
         imagePullPolicy: Always
         ports:
         - containerPort: 7000
+        - containerPort: 8080  # Health check endpoint
         resources:
           requests:
             cpu: 100m
@@ -43,18 +47,14 @@ spec:
             cpu: 500m
             memory: 256Mi
         livenessProbe:
-          exec:
-            command:
-            - /bin/sh
-            - -c
-            - "ls /app/MasterServer.dll > /dev/null"
+          httpGet:
+            path: /health
+            port: 8080
           initialDelaySeconds: 30
           periodSeconds: 10
         readinessProbe:
-          exec:
-            command:
-            - /bin/sh
-            - -c
-            - "ls /app/MasterServer.dll > /dev/null"
+          httpGet:
+            path: /ready
+            port: 8080
           initialDelaySeconds: 5
           periodSeconds: 10 

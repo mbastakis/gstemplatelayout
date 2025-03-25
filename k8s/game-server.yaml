@@ -57,6 +57,8 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: status.podIP
+        - name: USE_PLAIN_CONSOLE_LOGGING
+          value: "true"
         resources:
           requests:
             cpu: 100m
@@ -76,6 +78,12 @@ spec:
             port: 8081
           initialDelaySeconds: 5
           periodSeconds: 10
+        volumeMounts:
+        - name: logs-volume
+          mountPath: /logs
+      volumes:
+      - name: logs-volume
+        emptyDir: {}
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler

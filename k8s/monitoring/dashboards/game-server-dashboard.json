@@ -363,22 +363,23 @@
         "type": "loki",
         "uid": "loki"
       },
+      "description": "Main unified log panel with filtering by app, level, category, and custom search",
       "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 16
+        "h": 16,
+        "w": 24,
+        "x": 0,
+        "y": 24
       },
-      "id": 6,
+      "id": 40,
       "options": {
-        "showTime": true,
-        "showLabels": true,
-        "showCommonLabels": false,
-        "sortOrder": "Descending",
-        "wrapLogMessage": false,
-        "prettifyLogMessage": false,
+        "dedupStrategy": "none",
         "enableLogDetails": true,
-        "showLogContext": false
+        "prettifyLogMessage": false,
+        "showCommonLabels": false,
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": false
       },
       "targets": [
         {
@@ -386,7 +387,9 @@
             "type": "loki",
             "uid": "loki"
           },
-          "expr": "{namespace=\"gs-template\", pod=~\"game-server-.*\"}",
+          "editorMode": "code",
+          "expr": "{namespace=\"gs-template\", app=~\"$app\"} |~ \"$logCategory\" |~ \"$logLevel\" |~ \"$customSearch\"",
+          "queryType": "range",
           "refId": "A"
         }
       ],
@@ -406,36 +409,167 @@
           "text": "All",
           "value": "$__all"
         },
-        "datasource": {
-          "type": "prometheus",
-          "uid": "prometheus"
-        },
-        "definition": "label_values(kube_pod_info{namespace=\"gs-template\", pod=~\"game-server-.*\"}, pod)",
         "hide": 0,
         "includeAll": true,
-        "label": "Game Server",
-        "multi": true,
-        "name": "game_server",
-        "options": [],
-        "query": {
-          "query": "label_values(kube_pod_info{namespace=\"gs-template\", pod=~\"game-server-.*\"}, pod)",
-          "refId": "StandardVariableQuery"
-        },
-        "refresh": 1,
-        "regex": "",
+        "label": "Application",
+        "multi": false,
+        "name": "app",
+        "options": [
+          {
+            "selected": true,
+            "text": "All",
+            "value": "$__all"
+          },
+          {
+            "selected": false,
+            "text": "game-server",
+            "value": "game-server"
+          },
+          {
+            "selected": false,
+            "text": "master-server",
+            "value": "master-server"
+          },
+          {
+            "selected": false,
+            "text": "client-simulator",
+            "value": "client-simulator"
+          }
+        ],
+        "query": "game-server,master-server,client-simulator",
+        "queryValue": "",
         "skipUrlSync": false,
-        "sort": 1,
-        "type": "query"
+        "type": "custom"
+      },
+      {
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "hide": 0,
+        "includeAll": true,
+        "label": "Log Category",
+        "multi": true,
+        "name": "logCategory",
+        "options": [
+          {
+            "selected": true,
+            "text": "All",
+            "value": "$__all"
+          },
+          {
+            "selected": false,
+            "text": "Connection",
+            "value": "Connection"
+          },
+          {
+            "selected": false,
+            "text": "GameState",
+            "value": "GameState"
+          },
+          {
+            "selected": false,
+            "text": "PlayerAction",
+            "value": "PlayerAction"
+          },
+          {
+            "selected": false,
+            "text": "System",
+            "value": "System"
+          },
+          {
+            "selected": false,
+            "text": "Error",
+            "value": "Error"
+          }
+        ],
+        "query": "Connection,GameState,PlayerAction,System,Error",
+        "queryValue": "",
+        "skipUrlSync": false,
+        "type": "custom"
+      },
+      {
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "hide": 0,
+        "includeAll": true,
+        "label": "Log Level",
+        "multi": true,
+        "name": "logLevel",
+        "options": [
+          {
+            "selected": true,
+            "text": "All",
+            "value": "$__all"
+          },
+          {
+            "selected": false,
+            "text": "Debug",
+            "value": "DBG"
+          },
+          {
+            "selected": false,
+            "text": "Info",
+            "value": "INF"
+          },
+          {
+            "selected": false,
+            "text": "Warning",
+            "value": "WRN"
+          },
+          {
+            "selected": false,
+            "text": "Error",
+            "value": "ERR"
+          }
+        ],
+        "query": "DBG,INF,WRN,ERR",
+        "queryValue": "",
+        "skipUrlSync": false,
+        "type": "custom"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "hide": 0,
+        "label": "Custom Search",
+        "name": "customSearch",
+        "options": [
+          {
+            "selected": true,
+            "text": "",
+            "value": ""
+          }
+        ],
+        "query": "",
+        "skipUrlSync": false,
+        "type": "textbox"
       }
     ]
   },
   "time": {
-    "from": "now-1h",
+    "from": "now-15m",
     "to": "now"
   },
   "timepicker": {},
   "timezone": "",
-  "title": "Game Server Monitoring",
-  "version": 0,
+  "title": "Game Server Dashboard",
+  "uid": "game-server",
+  "version": 1,
   "weekStart": ""
 } 

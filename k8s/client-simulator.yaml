@@ -27,6 +27,9 @@ spec:
             - "55"
             - "--action-interval"
             - "500"
+          env:
+            - name: USE_PLAIN_CONSOLE_LOGGING
+              value: "true"
           resources:
             requests:
               cpu: 100m
@@ -34,3 +37,9 @@ spec:
             limits:
               cpu: 500m
               memory: 256Mi
+          volumeMounts:
+            - name: logs-volume
+              mountPath: /logs
+      volumes:
+        - name: logs-volume
+          emptyDir: {}

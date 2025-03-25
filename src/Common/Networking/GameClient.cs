@@ -157,6 +157,11 @@ namespace Common.Networking
                     // Handle player update messages
                     Logger.GameState(LogLevel.Debug, $"Received player update");
                     break;
+                
+                case MessageType.GameStateUpdate:
+                    // Handle game state update messages
+                    Logger.GameState(LogLevel.Debug, $"Received game state update");
+                    break;
                     
                 default:
                     Logger.System(LogLevel.Warning, $"Received unknown message type from game server: {message.Type}");

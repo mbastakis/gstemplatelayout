@@ -39,6 +39,9 @@ spec:
         ports:
         - containerPort: 7000
         - containerPort: 8080  # Health check endpoint
+        env:
+        - name: USE_PLAIN_CONSOLE_LOGGING
+          value: "true"
         resources:
           requests:
             cpu: 100m
@@ -57,4 +60,10 @@ spec:
             path: /ready
             port: 8080
           initialDelaySeconds: 5
-          periodSeconds: 10 
+          periodSeconds: 10
+        volumeMounts:
+        - name: logs-volume
+          mountPath: /logs
+      volumes:
+      - name: logs-volume
+        emptyDir: {} 

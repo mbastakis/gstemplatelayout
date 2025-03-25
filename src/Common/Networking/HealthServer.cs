@@ -4,6 +4,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Common.Logging;
+using System.Collections.Generic;
 
 namespace Common.Networking
 {
@@ -58,14 +59,29 @@ namespace Common.Networking
                 
                 IsRunning = true;
                 
-                Logger.System(LogLevel.Info, $"Health check server for {_serviceName} started on port {_port}");
+                var logProps = new Dictionary<string, object>
+                {
+                    { "Component", "HealthServer" },
+                    { "ServiceName", _serviceName },
+                    { "Port", _port }
+                };
+                
+                Logger.System(LogLevel.Info, $"Health check server for {_serviceName} started on port {_port}", logProps);
                 
                 // Handle health check requests
                 Task.Run(() => HandleHealthRequests(_cts.Token));
             }
             catch (Exception ex)
             {
-                Logger.Error($"Failed to start health check server for {_serviceName}: {ex.Message}", ex);
+                var logProps = new Dictionary<string, object>
+                {
+                    { "Component", "HealthServer" },
+                    { "ServiceName", _serviceName },
+                    { "Port", _port },
+                    { "Error", ex.Message }
+                };
+                
+                Logger.Error($"Failed to start health check server for {_serviceName}: {ex.Message}", ex, logProps);
                 throw;
             }
         }
@@ -80,7 +96,13 @@ namespace Common.Networking
             _cts?.Cancel();
             _listener?.Stop();
             
-            Logger.System(LogLevel.Info, $"Health check server for {_serviceName} stopped");
+            var logProps = new Dictionary<string, object>
+            {
+                { "Component", "HealthServer" },
+                { "ServiceName", _serviceName }
+            };
+            
+            Logger.System(LogLevel.Info, $"Health check server for {_serviceName} stopped", logProps);
         }
         
         private async Task HandleHealthRequests(CancellationToken cancellationToken)
@@ -96,6 +118,18 @@ namespace Common.Networking
                     {
                         try
                         {
+                            var correlationId = Logger.NewCorrelationId();
+                            var logProps = new Dictionary<string, object>
+                            {
+                                { "Component", "HealthServer" },
+                                { "ServiceName", _serviceName },
+                                { "CorrelationId", correlationId },
+                                { "RequestPath", context.Request.Url.AbsolutePath },
+                                { "RemoteIP", context.Request.RemoteEndPoint.ToString() }
+                            };
+                            
+                            Logger.System(LogLevel.Debug, $"Health request received: {context.Request.Url.AbsolutePath}", logProps);
+                            
                             var response = context.Response;
                             string responseString;
                             
@@ -107,11 +141,13 @@ namespace Common.Networking
                                     {
                                         response.StatusCode = 200;
                                         responseString = "OK";
+                                        logProps["Status"] = "Healthy";
                                     }
                                     else
                                     {
                                         response.StatusCode = 503;
                                         responseString = "Service not running";
+                                        logProps["Status"] = "Unhealthy";
                                     }
                                     break;
                                     
@@ -121,11 +157,13 @@ namespace Common.Networking
                                     {
                                         response.StatusCode = 200;
                                         responseString = "Ready";
+                                        logProps["Status"] = "Ready";
                                     }
                                     else
                                     {
                                         response.StatusCode = 503;
                                         responseString = "Not Ready";
+                                        logProps["Status"] = "NotReady";
                                     }
                                     break;
                                     
@@ -135,6 +173,9 @@ namespace Common.Networking
                                     responseString = $"{_serviceName} Status:\n" +
                                         $"Running: {IsRunning}\n" +
                                         $"Ready: {IsReady}\n";
+                                    
+                                    logProps["IsRunning"] = IsRunning;
+                                    logProps["IsReady"] = IsReady;
                                         
                                     // Add additional status info if available
                                     if (GetAdditionalStatus != null)
@@ -146,8 +187,12 @@ namespace Common.Networking
                                 default:
                                     response.StatusCode = 404;
                                     responseString = "Not Found";
+                                    logProps["Status"] = "NotFound";
                                     break;
                             }
+                            
+                            logProps["StatusCode"] = response.StatusCode;
+                            Logger.System(LogLevel.Debug, $"Health request completed: {context.Request.Url.AbsolutePath} - {response.StatusCode}", logProps);
                             
                             byte[] buffer = Encoding.UTF8.GetBytes(responseString);
                             response.ContentLength64 = buffer.Length;
@@ -158,7 +203,16 @@ namespace Common.Networking
                         }
                         catch (Exception ex)
                         {
-                            Logger.Error($"Error handling health request: {ex.Message}", ex);
+                            var errorProps = new Dictionary<string, object>
+                            {
+                                { "Component", "HealthServer" },
+                                { "ServiceName", _serviceName },
+                                { "CorrelationId", Logger.CorrelationId },
+                                { "Error", ex.Message },
+                                { "ExceptionType", ex.GetType().Name }
+                            };
+                            
+                            Logger.Error($"Error handling health request: {ex.Message}", ex, errorProps);
                         }
                     });
                 }
@@ -169,7 +223,15 @@ namespace Common.Networking
             }
             catch (Exception ex)
             {
-                Logger.Error($"Error in health check server: {ex.Message}", ex);
+                var errorProps = new Dictionary<string, object>
+                {
+                    { "Component", "HealthServer" },
+                    { "ServiceName", _serviceName },
+                    { "Error", ex.Message },
+                    { "ExceptionType", ex.GetType().Name }
+                };
+                
+                Logger.Error($"Error in health check server: {ex.Message}", ex, errorProps);
             }
         }
 

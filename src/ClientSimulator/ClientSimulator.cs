@@ -32,7 +32,6 @@ namespace ClientSimulator
             _connectedClients = 0;  // Explicitly initialize to 0
             
             Logger.Initialize("ClientSimulator", "logs/client-simulator.log");
-            Logger.SetCategoryEnabled(LogCategory.PlayerAction, true);  // Enable player action logs
         }
 
         public async Task Start()
@@ -170,6 +169,14 @@ namespace ClientSimulator
             var client = sender as Common.Networking.GameClient;
             var clientId = client?.ClientId ?? "unknown";
             
+            // Create structured logging data
+            var logProps = new Dictionary<string, object>
+            {
+                { "ClientId", clientId },
+                { "Action", "connected" },
+                { "Component", "ClientSimulator" }
+            };
+            
             // Interlocked.Increment returns the new value
             var newCount = Interlocked.Increment(ref _connectedClients);
             
@@ -180,22 +187,50 @@ namespace ClientSimulator
                 newCount = _numClients;
             }
             
-            Logger.Connection(LogLevel.Info, $"Client {clientId.Substring(0, 6)} connected to game server. Total connected: {newCount}/{_numClients}");
+            // Add connected count to properties
+            logProps["ConnectedCount"] = newCount;
+            logProps["TotalClients"] = _numClients;
+            
+            // Use the new structured logging format
+            Logger.Connection(LogLevel.Info, $"Client {clientId.Substring(0, 6)} connected to game server. Total connected: {newCount}/{_numClients}", logProps);
         }
         
         private void OnClientDisconnected(object sender, EventArgs e)
         {
             var client = sender as Common.Networking.GameClient;
             var clientId = client?.ClientId ?? "unknown";
+            
+            // Structured logging data
+            var logProps = new Dictionary<string, object>
+            {
+                { "ClientId", clientId },
+                { "Action", "disconnected" },
+                { "Component", "ClientSimulator" }
+            };
+            
             var newCount = Interlocked.Decrement(ref _connectedClients);
-            Logger.Connection(LogLevel.Info, $"Client {clientId.Substring(0, 6)} disconnected from game server. Total connected: {newCount}/{_numClients}");
+            
+            // Add connected count to properties
+            logProps["ConnectedCount"] = newCount;
+            logProps["TotalClients"] = _numClients;
+            
+            Logger.Connection(LogLevel.Info, $"Client {clientId.Substring(0, 6)} disconnected from game server. Total connected: {newCount}/{_numClients}", logProps);
         }
         
         private void OnClientActionSent(object sender, string action)
         {
             var client = sender as Common.Networking.GameClient;
             var clientId = client?.ClientId ?? "unknown";
-            Logger.PlayerAction(LogLevel.Info, $"Client {clientId.Substring(0, 6)} sent action: {action}");
+            
+            // Structured logging with more context
+            var logProps = new Dictionary<string, object>
+            {
+                { "ClientId", clientId },
+                { "ActionType", action },
+                { "Component", "ClientSimulator" }
+            };
+            
+            Logger.PlayerAction(LogLevel.Info, $"Client {clientId.Substring(0, 6)} sent action: {action}", logProps);
         }
 
         private async Task SendRandomActionAsync(SocketClient client, string clientId)

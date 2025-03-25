@@ -2,6 +2,18 @@ using System;
 
 namespace Common.Models
 {
+    // Client data for connecting to a game server
+    public class ClientConnectData
+    {
+        public string ClientId { get; set; }
+        public string ClientInfo { get; set; }
+        
+        public override string ToString()
+        {
+            return $"Connection data from client {ClientId?.Substring(0, Math.Min(6, ClientId?.Length ?? 0))}";
+        }
+    }
+
     // Request from client to connect to a game server (sent to master server)
     public class ClientConnectRequest
     {
@@ -18,12 +30,13 @@ namespace Common.Models
     {
         public bool Success { get; set; }
         public string Error { get; set; }
+        public string ServerId { get; set; }
         public string ServerEndpoint { get; set; }
         
         public override string ToString()
         {
             return Success 
-                ? $"Connection successful, assigned to: {ServerEndpoint}" 
+                ? $"Connection successful, assigned to server {ServerId?.Substring(0, Math.Min(6, ServerId?.Length ?? 0))} at {ServerEndpoint}" 
                 : $"Connection failed: {Error}";
         }
     }

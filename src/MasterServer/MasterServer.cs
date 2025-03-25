@@ -10,6 +10,7 @@ using System.Text;
 using Common.Logging;
 using System.Text.Json;
 using System.Net;
+using System.Collections.Generic;
 
 namespace MasterServer
 {
@@ -83,33 +84,62 @@ namespace MasterServer
                 
             foreach (var server in deadServers)
             {
-                Logger.Connection(LogLevel.Warning, $"Game server {server.Id} timed out");
+                var logProps = new Dictionary<string, object>
+                {
+                    { "ServerId", server.Id },
+                    { "ShortServerId", server.Id.Substring(0, Math.Min(6, server.Id.Length)) },
+                    { "Endpoint", server.Endpoint },
+                    { "LastHeartbeat", server.LastHeartbeat }
+                };
+                
+                Logger.Connection(LogLevel.Warning, "Game server {ShortServerId} timed out", logProps);
                 _gameServers.TryRemove(server.Id, out _);
             }
             
             // Only log if there's a change in the game server status
             var gameServerStatus = string.Join(", ", _gameServers.Values.Select(s => 
-                $"{s.Id.Substring(0, 6)}: {s.Endpoint}, Players: {s.CurrentPlayers}/{s.MaxPlayers}"
+                $"{s.Id.Substring(0, Math.Min(6, s.Id.Length))}: {s.Endpoint}, Players: {s.CurrentPlayers}/{s.MaxPlayers}"
             ));
             
             if (_lastGameServerStatus != gameServerStatus)
             {
-                Logger.GameState(LogLevel.Info, $"Active game servers: {_gameServers.Count}");
-                foreach (var server in _gameServers.Values)
+                var logProps = new Dictionary<string, object>
                 {
-                    Logger.GameState(LogLevel.Info, $"  - {server.Id.Substring(0, 6)}: {server.Endpoint}, Players: {server.CurrentPlayers}/{server.MaxPlayers}");
-                }
+                    { "ServerCount", _gameServers.Count },
+                    { "ServerDetails", _gameServers.Values.Select(s => new 
+                        {
+                            ServerId = s.Id.Substring(0, Math.Min(6, s.Id.Length)),
+                            Endpoint = s.Endpoint,
+                            CurrentPlayers = s.CurrentPlayers,
+                            MaxPlayers = s.MaxPlayers
+                        }).ToArray()
+                    }
+                };
+                
+                Logger.GameState(LogLevel.Info, "Active game servers: {ServerCount}", logProps);
                 _lastGameServerStatus = gameServerStatus;
             }
         }
 
         protected override async Task ProcessMessageAsync(string clientId, Message message)
         {
-            Logger.System(LogLevel.Info, $"Processing message from {clientId}: Type={message.Type}");
+            // Generate a correlation ID for this request
+            var correlationId = Logger.NewCorrelationId();
+            
+            // Create structured logging context
+            var logProps = new Dictionary<string, object>
+            {
+                { "ClientId", clientId },
+                { "ShortenedClientId", clientId.Substring(0, Math.Min(6, clientId.Length)) },
+                { "MessageType", message.Type.ToString() },
+                { "CorrelationId", correlationId }
+            };
+            
+            Logger.System(LogLevel.Info, "Processing message from {ShortenedClientId} of type {MessageType}", logProps);
             
             if (message.Type != MessageType.GameServerHeartbeat)
             {
-                Logger.System(LogLevel.Debug, $"Received message from {clientId}: {message.Type}");
+                Logger.System(LogLevel.Debug, $"Received message from {clientId}: {message.Type}", logProps);
             }
             
             switch (message.Type)
@@ -131,19 +161,29 @@ namespace MasterServer
                     break;
                     
                 default:
-                    Logger.System(LogLevel.Warning, $"Unhandled message type: {message.Type}");
+                    Logger.System(LogLevel.Warning, "Unhandled message type: {MessageType}", logProps);
                     break;
             }
         }
 
         private async Task HandleGameServerRegistrationAsync(string clientId, Message message)
         {
-            Logger.Connection(LogLevel.Info, $"Processing game server registration from {clientId.Substring(0, 6)}...");
+            // Create structured logging context reusing current correlation ID
+            var logProps = new Dictionary<string, object>
+            {
+                { "ClientId", clientId },
+                { "ShortenedClientId", clientId.Substring(0, Math.Min(6, clientId.Length)) },
+                { "MessageType", "RegisterGameServer" },
+                { "CorrelationId", Logger.CorrelationId }
+            };
+            
+            Logger.Connection(LogLevel.Info, "Processing game server registration from {ShortenedClientId}", logProps);
             var registrationData = message.GetData<GameServerRegistrationData>();
             
             if (registrationData == null)
             {
-                Logger.Error($"Invalid game server registration data from {clientId.Substring(0, 6)}");
+                logProps["Error"] = "InvalidRegistrationData";
+                Logger.Error("Invalid game server registration data from {ShortenedClientId}", null, logProps);
                 var failResponse = new GameServerRegistrationResponse
                 {
                     Success = false,
@@ -153,7 +193,13 @@ namespace MasterServer
                 return;
             }
             
-            Logger.Connection(LogLevel.Debug, $"Registration data received: ServerId={registrationData.ServerId.Substring(0, 6)}, Endpoint={registrationData.Endpoint}, MaxPlayers={registrationData.MaxPlayers}");
+            // Add registration data to log properties
+            logProps["ServerId"] = registrationData.ServerId;
+            logProps["ShortServerId"] = registrationData.ServerId.Substring(0, Math.Min(6, registrationData.ServerId.Length));
+            logProps["Endpoint"] = registrationData.Endpoint;
+            logProps["MaxPlayers"] = registrationData.MaxPlayers;
+            
+            Logger.Connection(LogLevel.Debug, "Registration data received: ServerId={ShortServerId}, Endpoint={Endpoint}, MaxPlayers={MaxPlayers}", logProps);
             
             var gameServer = new GameServerInfo
             {
@@ -165,7 +211,10 @@ namespace MasterServer
             
             _gameServers[gameServer.Id] = gameServer;
             
-            Logger.Connection(LogLevel.Info, $"Game server registered: {gameServer.Id.Substring(0, 6)} at {gameServer.Endpoint}");
+            // Add result to log properties
+            logProps["RegisteredServers"] = _gameServers.Count;
+            
+            Logger.Connection(LogLevel.Info, "Game server registered: {ShortServerId} at {Endpoint}", logProps);
             
             // Acknowledge registration
             var response = new GameServerRegistrationResponse
@@ -173,7 +222,7 @@ namespace MasterServer
                 Success = true
             };
             await SendMessageAsync(clientId, Message.Create<GameServerRegistrationResponse>(MessageType.RegisterGameServer, response));
-            Logger.Connection(LogLevel.Debug, $"Registration acknowledgment sent to {clientId.Substring(0, 6)}");
+            Logger.Connection(LogLevel.Debug, "Registration acknowledgment sent to {ShortenedClientId}", logProps);
         }
 
         private Task HandleGameServerHeartbeatAsync(string clientId, Message message)
@@ -182,14 +231,31 @@ namespace MasterServer
             
             if (heartbeatData == null || !_gameServers.TryGetValue(heartbeatData.ServerId, out var gameServer))
             {
-                Logger.Error($"Invalid game server heartbeat data or unknown server from {clientId.Substring(0, 6)}");
+                var logProps = new Dictionary<string, object>
+                {
+                    { "ClientId", clientId },
+                    { "ShortenedClientId", clientId.Substring(0, Math.Min(6, clientId.Length)) },
+                    { "MessageType", "GameServerHeartbeat" },
+                    { "Error", "InvalidHeartbeatData" }
+                };
+                
+                Logger.Error("Invalid game server heartbeat data or unknown server from {ShortenedClientId}", null, logProps);
                 return Task.CompletedTask;
             }
             
             // Only log changes in player count
             if (gameServer.CurrentPlayers != heartbeatData.CurrentPlayers)
             {
-                Logger.GameState(LogLevel.Info, $"Server {heartbeatData.ServerId.Substring(0, 6)} player count changed: {gameServer.CurrentPlayers} -> {heartbeatData.CurrentPlayers}");
+                var logProps = new Dictionary<string, object>
+                {
+                    { "ServerId", heartbeatData.ServerId },
+                    { "ShortServerId", heartbeatData.ServerId.Substring(0, Math.Min(6, heartbeatData.ServerId.Length)) },
+                    { "OldPlayerCount", gameServer.CurrentPlayers },
+                    { "NewPlayerCount", heartbeatData.CurrentPlayers },
+                    { "MaxPlayers", gameServer.MaxPlayers }
+                };
+                
+                Logger.GameState(LogLevel.Info, "Server {ShortServerId} player count changed: {OldPlayerCount} -> {NewPlayerCount}", logProps);
             }
             
             gameServer.CurrentPlayers = heartbeatData.CurrentPlayers;
@@ -200,75 +266,99 @@ namespace MasterServer
 
         private async Task HandleClientConnectAsync(string clientId, Message message)
         {
-            Logger.Connection(LogLevel.Info, $"Processing client connection request from {clientId}");
-            
-            try
+            // Create structured log properties
+            var logProps = new Dictionary<string, object>
             {
-                // Extract client data if provided
-                var requestData = message.GetData<JsonElement>();
-                string clientIdentifier = null;
+                { "ClientId", clientId },
+                { "ShortenedClientId", clientId.Substring(0, Math.Min(6, clientId.Length)) },
+                { "MessageType", "ClientConnect" },
+                { "CorrelationId", Logger.CorrelationId }
+            };
+            
+            Logger.Connection(LogLevel.Info, "Processing client connection request from {ShortenedClientId}", logProps);
+            
+            var connectData = message.GetData<ClientConnectData>();
+            if (connectData == null)
+            {
+                logProps["Error"] = "InvalidConnectData";
+                Logger.Error("Invalid client connect data from {ShortenedClientId}", null, logProps);
                 
-                if (requestData.ValueKind == JsonValueKind.Object && requestData.TryGetProperty("ClientId", out var clientIdProp))
-                {
-                    clientIdentifier = clientIdProp.GetString();
-                    Logger.Connection(LogLevel.Debug, $"Client identified itself as: {clientIdentifier}");
-                }
-                
-                // Log available servers
-                Logger.Connection(LogLevel.Debug, $"Available game servers: {_gameServers.Count}");
-                foreach (var server in _gameServers.Values)
-                {
-                    Logger.Connection(LogLevel.Debug, $" - Server {server.Id.Substring(0, 6)}: Endpoint={server.Endpoint}, Players={server.CurrentPlayers}/{server.MaxPlayers}, Available={server.IsAvailable}");
-                }
-                
-                // Find the game server with the least number of players
-                var bestServer = _gameServers.Values
-                    .Where(s => s.IsAvailable)
-                    .OrderBy(s => s.CurrentPlayers)
-                    .FirstOrDefault();
-                    
-                if (bestServer == null)
-                {
-                    Logger.Connection(LogLevel.Warning, $"No available game servers for client {clientId}");
-                    var failResponse = new ClientConnectResponse
-                    {
-                        Success = false,
-                        Error = "No available game servers"
-                    };
-                    await SendMessageAsync(clientId, Message.Create<ClientConnectResponse>(MessageType.ClientConnect, failResponse));
-                    return;
-                }
-                
-                _clientToGameServerMap[clientId] = bestServer.Id;
-                
-                // Send the game server info to the client
                 var response = new ClientConnectResponse
                 {
-                    Success = true,
-                    ServerEndpoint = bestServer.Endpoint
+                    Success = false,
+                    Error = "Invalid connect data"
                 };
-                
-                Logger.Connection(LogLevel.Info, $"Sending success response to client {clientId}: {response}");
                 await SendMessageAsync(clientId, Message.Create<ClientConnectResponse>(MessageType.ClientConnect, response));
-                
-                Logger.Connection(LogLevel.Info, $"Client {clientId} routed to game server {bestServer.Id.Substring(0, 6)} at {bestServer.Endpoint}");
+                return;
             }
-            catch (Exception ex)
+            
+            // Get list of available game servers
+            var availableServers = _gameServers.Values
+                .Where(server => server.CurrentPlayers < server.MaxPlayers)
+                .OrderBy(server => server.CurrentPlayers) // Load balancing - prioritize emptier servers
+                .ToList();
+                
+            logProps["AvailableServerCount"] = availableServers.Count;
+            
+            if (!availableServers.Any())
             {
-                Logger.Error($"Error handling client connection request from {clientId}: {ex.Message}");
-                var failResponse = new ClientConnectResponse
+                logProps["Error"] = "NoAvailableServers";
+                Logger.Connection(LogLevel.Warning, "No available game servers for client {ShortenedClientId}", logProps);
+                
+                var response = new ClientConnectResponse
                 {
                     Success = false,
-                    Error = $"Internal server error: {ex.Message}"
+                    Error = "No available game servers"
                 };
-                await SendMessageAsync(clientId, Message.Create<ClientConnectResponse>(MessageType.ClientConnect, failResponse));
+                await SendMessageAsync(clientId, Message.Create<ClientConnectResponse>(MessageType.ClientConnect, response));
+                return;
             }
+            
+            // Assign client to first available server
+            var selectedServer = availableServers.First();
+            
+            logProps["ServerId"] = selectedServer.Id;
+            logProps["ShortServerId"] = selectedServer.Id.Substring(0, Math.Min(6, selectedServer.Id.Length));
+            logProps["ServerEndpoint"] = selectedServer.Endpoint;
+            logProps["ServerCurrentPlayers"] = selectedServer.CurrentPlayers;
+            logProps["ServerMaxPlayers"] = selectedServer.MaxPlayers;
+            
+            _clientToGameServerMap[clientId] = selectedServer.Id;
+            
+            Logger.Connection(LogLevel.Info, "Client {ShortenedClientId} assigned to game server {ShortServerId}", logProps);
+            
+            // Respond with server connection details
+            var connectResponse = new ClientConnectResponse
+            {
+                Success = true,
+                ServerId = selectedServer.Id,
+                ServerEndpoint = selectedServer.Endpoint
+            };
+            
+            await SendMessageAsync(clientId, Message.Create<ClientConnectResponse>(MessageType.ClientConnect, connectResponse));
+            Logger.Connection(LogLevel.Debug, "Connection details sent to client {ShortenedClientId}", logProps);
         }
 
         private Task HandleClientDisconnectAsync(string clientId)
         {
-            _clientToGameServerMap.TryRemove(clientId, out _);
-            Logger.Connection(LogLevel.Info, $"Client {clientId.Substring(0, 6)} disconnected from master server");
+            var logProps = new Dictionary<string, object>
+            {
+                { "ClientId", clientId },
+                { "ShortenedClientId", clientId.Substring(0, Math.Min(6, clientId.Length)) }
+            };
+            
+            if (_clientToGameServerMap.TryRemove(clientId, out var serverId))
+            {
+                logProps["ServerId"] = serverId;
+                logProps["ShortServerId"] = serverId.Substring(0, Math.Min(6, serverId.Length));
+                
+                Logger.Connection(LogLevel.Info, "Client {ShortenedClientId} disconnected from server {ShortServerId}", logProps);
+            }
+            else
+            {
+                Logger.Connection(LogLevel.Info, "Client {ShortenedClientId} disconnected (not assigned to a server)", logProps);
+            }
+            
             return Task.CompletedTask;
         }
 

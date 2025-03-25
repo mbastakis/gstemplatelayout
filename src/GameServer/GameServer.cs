@@ -10,6 +10,7 @@ using System.Linq;
 using System.Numerics;
 using System.Net;
 using System.Text;
+using System.Collections.Generic;
 
 namespace GameServer
 {
@@ -238,14 +239,24 @@ namespace GameServer
 
         protected override async Task ProcessMessageAsync(string clientId, Message message)
         {
-            if (message.Type == MessageType.PlayerAction)
+            // Generate a correlation ID for this request
+            var correlationId = Logger.NewCorrelationId();
+            
+            // Create structured logging context with client ID
+            var logProps = new Dictionary<string, object>
             {
-                Logger.System(LogLevel.Info, $"RECEIVED MESSAGE: Player {clientId.Substring(0, 6)} sending action");
-            }
-            else
-            {
-                Logger.System(LogLevel.Debug, $"Received message from client {clientId.Substring(0, 6)}: {message.Type}");
-            }
+                { "ClientId", clientId },
+                { "MessageType", message.Type.ToString() },
+                { "CorrelationId", correlationId }
+            };
+            
+            // Use properly structured logging with template parameters - notice {PlayerId} placeholder
+            Logger.System(LogLevel.Info, "Received message from player {PlayerId} of type {MessageType}", 
+                new Dictionary<string, object> {
+                    { "PlayerId", clientId.Substring(0, Math.Min(6, clientId.Length)) }, // Shortened PlayerId for readability 
+                    { "ClientId", clientId }, // Full ClientId for searching/filtering
+                    { "MessageType", message.Type.ToString() }
+                });
             
             switch (message.Type)
             {
@@ -259,35 +270,70 @@ namespace GameServer
                         var actionData = message.GetData<PlayerAction>();
                         if (actionData != null)
                         {
-                            Logger.GameState(LogLevel.Debug, $"Processing action from player {clientId.Substring(0, 6)}: {actionData.Type} = {actionData.Value}");
+                            // Enhanced logging with action details
+                            var actionProps = new Dictionary<string, object>
+                            {
+                                { "PlayerId", clientId.Substring(0, Math.Min(6, clientId.Length)) },
+                                { "ClientId", clientId },
+                                { "ActionType", actionData.Type.ToString() },
+                                { "ActionValue", actionData.Value }
+                            };
+                            Logger.GameState(LogLevel.Debug, "Processing {ActionType} action from player {PlayerId} with value {ActionValue}", actionProps);
                             await HandlePlayerActionAsync(clientId, actionData);
                         }
                         else
                         {
-                            Logger.Error($"Invalid action data from client {clientId.Substring(0, 6)}");
+                            Logger.Error("Invalid action data from client {PlayerId}", null, 
+                                new Dictionary<string, object> {
+                                    { "PlayerId", clientId.Substring(0, Math.Min(6, clientId.Length)) },
+                                    { "ClientId", clientId }
+                                });
                         }
                     }
                     catch (Exception ex)
                     {
-                        Logger.Error($"Error processing action from client {clientId.Substring(0, 6)}: {ex.Message}");
+                        Logger.Error("Error processing action from client {PlayerId}: {ErrorMessage}", ex, 
+                            new Dictionary<string, object> {
+                                { "PlayerId", clientId.Substring(0, Math.Min(6, clientId.Length)) },
+                                { "ClientId", clientId },
+                                { "ErrorMessage", ex.Message }
+                            });
                     }
                     break;
                     
                 default:
-                    Logger.System(LogLevel.Warning, $"Unknown message type from client {clientId.Substring(0, 6)}: {message.Type}");
+                    Logger.System(LogLevel.Warning, "Unknown message type {MessageType} from client {PlayerId}", 
+                        new Dictionary<string, object> {
+                            { "PlayerId", clientId.Substring(0, Math.Min(6, clientId.Length)) },
+                            { "ClientId", clientId },
+                            { "MessageType", message.Type.ToString() }
+                        });
                     break;
             }
         }
 
         private async Task HandlePlayerJoinAsync(string clientId)
         {
+            // Create common properties for consistency across log messages
+            var logProps = new Dictionary<string, object>
+            {
+                { "PlayerId", clientId.Substring(0, Math.Min(6, clientId.Length)) },
+                { "ClientId", clientId },
+                { "Action", "join" }
+            };
+            
             try
             {
-                Logger.GameState(LogLevel.Info, $"Processing join request from player {clientId.Substring(0, 6)}");
+                Logger.GameState(LogLevel.Info, "Processing join request from player {PlayerId}", logProps);
                 
                 if (_players.Count >= _maxPlayers)
                 {
-                    Logger.GameState(LogLevel.Warning, $"Server is full, rejecting player {clientId.Substring(0, 6)}");
+                    logProps["Reason"] = "ServerFull";
+                    logProps["CurrentPlayers"] = _players.Count;
+                    logProps["MaxPlayers"] = _maxPlayers;
+                    
+                    Logger.GameState(LogLevel.Warning, "Server is full, rejecting player {PlayerId}. Players: {CurrentPlayers}/{MaxPlayers}", logProps);
+                    
                     var failResponse = new PlayerJoinResponse
                     {
                         Success = false,
@@ -298,7 +344,7 @@ namespace GameServer
                 }
                 
                 // Log more details about the connection process
-                Logger.Connection(LogLevel.Debug, $"Creating player info for client ID {clientId.Substring(0, 6)}");
+                Logger.Connection(LogLevel.Debug, "Creating player info for client {PlayerId}", logProps);
                 
                 var playerInfo = new PlayerInfo
                 {
@@ -307,6 +353,10 @@ namespace GameServer
                 };
                 
                 _players[clientId] = playerInfo;
+                
+                // Update player count in logProps
+                logProps["CurrentPlayers"] = _players.Count;
+                logProps["MaxPlayers"] = _maxPlayers;
                 
                 // Notify the player that they've joined successfully
                 var response = new PlayerJoinResponse
@@ -322,11 +372,15 @@ namespace GameServer
                 };
                 await BroadcastMessageAsync(Message.Create<PlayerJoinNotification>(MessageType.PlayerJoin, notification), clientId);
                 
-                Logger.GameState(LogLevel.Info, $"Player {clientId.Substring(0, 6)} joined successfully");
+                Logger.GameState(LogLevel.Info, "Player {PlayerId} joined successfully. Total players: {CurrentPlayers}/{MaxPlayers}", logProps);
             }
             catch (Exception ex)
             {
-                Logger.Error($"Error processing player join: {ex.Message}", ex);
+                logProps["ErrorMessage"] = ex.Message;
+                logProps["ExceptionType"] = ex.GetType().Name;
+                
+                Logger.Error("Error processing player {PlayerId} join: {ErrorMessage}", ex, logProps);
+                
                 var failResponse = new PlayerJoinResponse
                 {
                     Success = false,
@@ -338,9 +392,20 @@ namespace GameServer
 
         private async Task HandlePlayerDisconnectAsync(string clientId)
         {
+            var logProps = new Dictionary<string, object>
+            {
+                { "PlayerId", clientId.Substring(0, Math.Min(6, clientId.Length)) },
+                { "ClientId", clientId },
+                { "Action", "disconnect" }
+            };
+            
             if (_players.TryRemove(clientId, out _))
             {
-                Logger.GameState(LogLevel.Info, $"Player {clientId.Substring(0, 6)} disconnected. Total players: {_players.Count}");
+                // Update player count in logProps
+                logProps["CurrentPlayers"] = _players.Count;
+                logProps["MaxPlayers"] = _maxPlayers;
+                
+                Logger.GameState(LogLevel.Info, "Player {PlayerId} disconnected. Total players: {CurrentPlayers}/{MaxPlayers}", logProps);
                 
                 // Notify all other players
                 var notification = new PlayerLeaveNotification
@@ -353,13 +418,26 @@ namespace GameServer
 
         private async Task HandlePlayerActionAsync(string clientId, PlayerAction action)
         {
+            var logProps = new Dictionary<string, object>
+            {
+                { "PlayerId", clientId.Substring(0, Math.Min(6, clientId.Length)) },
+                { "ClientId", clientId },
+                { "ActionType", action.Type.ToString() },
+                { "ActionValue", action.Value }
+            };
+            
             try
             {
                 if (!_players.TryGetValue(clientId, out var playerInfo))
                 {
-                    Logger.Error($"Received action from unknown player {clientId.Substring(0, 6)}");
+                    Logger.Error("Received action from unknown player {PlayerId}", null, logProps);
                     return;
                 }
+
+                // Add player state to log props
+                logProps["PlayerPosition"] = playerInfo.Position;
+                logProps["PlayerRotation"] = playerInfo.Rotation;
+                logProps["PlayerScale"] = playerInfo.Scale;
 
                 // Simulate intensive game server operations
                 await SimulateGameServerLoadAsync();
@@ -369,12 +447,15 @@ namespace GameServer
                 {
                     case ActionType.Move:
                         playerInfo.Position += action.Value * 0.1f;
+                        logProps["NewPosition"] = playerInfo.Position;
                         break;
                     case ActionType.Rotate:
                         playerInfo.Rotation += action.Value * 0.1f;
+                        logProps["NewRotation"] = playerInfo.Rotation;
                         break;
                     case ActionType.Scale:
                         playerInfo.Scale = Math.Max(0.1f, Math.Min(2.0f, playerInfo.Scale + action.Value * 0.01f));
+                        logProps["NewScale"] = playerInfo.Scale;
                         break;
                 }
 
@@ -399,10 +480,14 @@ namespace GameServer
                 };
 
                 await BroadcastMessageAsync(Message.Create<GameStateUpdate>(MessageType.GameStateUpdate, stateUpdate));
+                
+                Logger.GameState(LogLevel.Debug, $"Player {clientId.Substring(0, 6)} action {action.Type} processed", logProps);
             }
             catch (Exception ex)
             {
-                Logger.Error($"Error handling player action: {ex.Message}", ex);
+                logProps["ErrorMessage"] = ex.Message;
+                logProps["ExceptionType"] = ex.GetType().Name;
+                Logger.Error($"Error handling player action: {ex.Message}", ex, logProps);
             }
         }
 
@@ -448,7 +533,14 @@ namespace GameServer
 
         protected override async Task OnClientDisconnectedAsync(string clientId)
         {
-            Logger.Connection(LogLevel.Info, $"Client {clientId.Substring(0, 6)} disconnected from game server");
+            var correlationId = Logger.NewCorrelationId();
+            var props = new Dictionary<string, object>
+            {
+                { "ClientId", clientId },
+                { "Action", "disconnect" }
+            };
+            
+            Logger.Connection(LogLevel.Info, $"Client {clientId.Substring(0, 6)} disconnected from game server", props);
             await HandlePlayerDisconnectAsync(clientId);
         }
 

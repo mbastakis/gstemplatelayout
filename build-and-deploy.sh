@@ -71,25 +71,31 @@ if [ "$SKIP_MONITORING" != "true" ]; then
     # Monitoring namespace doesn't exist, install monitoring stack
     echo "Setting up monitoring stack (namespace doesn't exist)..."
     chmod +x k8s/monitoring/install-monitoring.sh
+    cd $(dirname "$0")  # Ensure we're in the root directory
     MONITORING_NAMESPACE=$MONITORING_NAMESPACE k8s/monitoring/install-monitoring.sh || {
       echo "Warning: Monitoring stack installation failed, but continuing with deployment"
     }
+    cd - > /dev/null  # Return to previous directory
   elif ! kubectl get deployment -n $MONITORING_NAMESPACE prometheus-stack-grafana &> /dev/null; then
     # Grafana not found, install monitoring stack
     echo "Setting up monitoring stack (Grafana not found)..."
     chmod +x k8s/monitoring/install-monitoring.sh
+    cd $(dirname "$0")  # Ensure we're in the root directory
     MONITORING_NAMESPACE=$MONITORING_NAMESPACE k8s/monitoring/install-monitoring.sh || {
       echo "Warning: Monitoring stack installation failed, but continuing with deployment"
     }
+    cd - > /dev/null  # Return to previous directory
   else
     # Monitoring already set up, check if dashboards need to be imported
     echo "Monitoring stack already installed, checking dashboards..."
     if ! kubectl get configmap -n $MONITORING_NAMESPACE grafana-game-server-dashboard &> /dev/null; then
       echo "Importing game server dashboard..."
       chmod +x k8s/monitoring/import-dashboard.sh
+      cd $(dirname "$0")  # Ensure we're in the root directory
       SKIP_DASHBOARD_IMPORT=false MONITORING_NAMESPACE=$MONITORING_NAMESPACE k8s/monitoring/import-dashboard.sh || {
         echo "Warning: Dashboard import failed, but continuing with deployment"
       }
+      cd - > /dev/null  # Return to previous directory
     else
       echo "Game server dashboard already imported, skipping monitoring setup."
     fi

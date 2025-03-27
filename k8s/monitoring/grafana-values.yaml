@@ -1,29 +1,49 @@
-datasources:
-  datasources.yaml:
-    apiVersion: 1
+grafana:
+  datasources:
+    # Disable the built-in default datasources
+    datasources.yaml:
+      apiVersion: 1
+      deleteDatasources:
+        - name: Prometheus
+          orgId: 1
+      datasources:
+        - name: Prometheus
+          type: prometheus
+          url: http://prometheus-stack-kube-prom-prometheus:9090
+          access: proxy
+          isDefault: true
+          uid: prometheus
+        - name: Loki
+          type: loki
+          url: http://loki-stack:3100
+          access: proxy
+          isDefault: false
+          uid: loki
+
+  dashboardProviders:
+    dashboardproviders.yaml:
+      apiVersion: 1
+      providers:
+        - name: 'default'
+          orgId: 1
+          folder: ''
+          type: file
+          disableDeletion: false
+          editable: true
+          options:
+            path: /var/lib/grafana/dashboards/default
+
+  service:
+    type: LoadBalancer
+    nodePort: 30080
+
+  adminPassword: prom-operator
+
+  # Don't rely on the default datasource settings from the chart
+  sidecar:
     datasources:
-      - name: Prometheus
-        type: prometheus
-        url: http://prometheus-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090
-        access: proxy
-        isDefault: true
-      - name: Loki
-        type: loki
-        url: http://loki.monitoring.svc.cluster.local:3100
-        access: proxy
+      enabled: false
 
-dashboardProviders:
-  dashboardproviders.yaml:
-    apiVersion: 1
-    providers:
-      - name: 'default'
-        orgId: 1
-        folder: ''
-        type: file
-        disableDeletion: false
-        editable: true
-        options:
-          path: /var/lib/grafana/dashboards/default
-
-service:
-  type: LoadBalancer 
+# Disable node-exporter to prevent CrashLoopBackOff
+nodeExporter:
+  enabled: false 

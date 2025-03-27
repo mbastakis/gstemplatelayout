@@ -39,19 +39,8 @@ if [ "$FORCE_REINSTALL" != true ] && \
     # Display Grafana access information
     echo ""
     echo "==== MONITORING DASHBOARD ===="
-    GRAFANA_URL="http://localhost:3000"  # Port-forwarded URL
-    EXTERNAL_URL=""
-
-    if [ -n "$(kubectl get svc -n $NAMESPACE prometheus-stack-grafana -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)" ]; then
-        EXTERNAL_URL="http://$(kubectl get svc -n $NAMESPACE prometheus-stack-grafana -o jsonpath='{.status.loadBalancer.ingress[0].ip}'):${GRAFANA_CONTAINER_PORT}"
-    elif [ -n "$(kubectl get svc -n $NAMESPACE prometheus-stack-grafana -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)" ]; then
-        EXTERNAL_URL="http://$(kubectl get svc -n $NAMESPACE prometheus-stack-grafana -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'):${GRAFANA_CONTAINER_PORT}"
-    fi
-
-    echo "Grafana port-forwarded URL: $GRAFANA_URL (run 'kubectl port-forward svc/prometheus-stack-grafana 3000:${GRAFANA_CONTAINER_PORT} -n monitoring')"
-    if [ -n "$EXTERNAL_URL" ]; then
-        echo "Grafana external URL: $EXTERNAL_URL"
-    fi
+    echo "Grafana is now accessible at: http://localhost:3000"
+    echo "You can also access it at: http://localhost:30080 (via nodePort)"
     echo "Grafana username: admin"
     echo "Grafana password: prom-operator"
     
@@ -88,13 +77,23 @@ helm repo update
 
 # Install Prometheus Stack with increased timeout
 echo "Installing Prometheus Stack..."
+echo "Using values file at: $SCRIPT_DIR/grafana-values.yaml"
+if [ ! -f "$SCRIPT_DIR/grafana-values.yaml" ]; then
+  echo "ERROR: Values file not found at $SCRIPT_DIR/grafana-values.yaml"
+  echo "Current directory: $(pwd)"
+  echo "Script directory: $SCRIPT_DIR"
+  exit 1
+fi
+
 helm upgrade --install prometheus-stack prometheus-community/kube-prometheus-stack \
   --namespace $NAMESPACE \
-  --set grafana.service.type=LoadBalancer \
-  --set grafana.service.port=80 \
-  --set grafana.adminPassword=prom-operator \
-  --timeout 10m \
-  --atomic
+  --values "$SCRIPT_DIR/grafana-values.yaml" \
+  --timeout 3m \
+  --set kubeScheduler.enabled=false \
+  --set kubeControllerManager.enabled=false \
+  --set kubeEtcd.enabled=false \
+  --set grafana.sidecar.datasources.enabled=false \
+  --set grafana.sidecar.dashboards.enabled=true
 
 # Install Loki Stack with increased timeout
 echo "Installing Loki Stack..."
@@ -104,17 +103,45 @@ helm upgrade --install loki-stack grafana/loki-stack \
   --set prometheus.enabled=false \
   --set loki.persistence.enabled=true \
   --set loki.persistence.size=10Gi \
-  --timeout 10m \
-  --atomic
+  --timeout 3m
 
 # Wait for all pods to be ready
 echo "Waiting for all pods to be ready..."
-kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=grafana -n $NAMESPACE --timeout=300s || true
+echo "Checking if Grafana pods exist..."
+GRAFANA_PODS=$(kubectl get pods -l app.kubernetes.io/name=grafana -n $NAMESPACE --no-headers 2>/dev/null | wc -l)
+if [ "$GRAFANA_PODS" -gt 0 ]; then
+    echo "Found $GRAFANA_PODS Grafana pods, waiting up to 60s for readiness..."
+    kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=grafana -n $NAMESPACE --timeout=60s || echo "Timed out waiting for Grafana pods"
+else
+    echo "No Grafana pods found yet, continuing anyway..."
+fi
 sleep 5
 
 # Check if grafana is running before trying port-forward
-if ! kubectl get pod -l app.kubernetes.io/name=grafana -n $NAMESPACE | grep -q "Running"; then
-    echo "Grafana is not running yet. Skipping port-forward and dashboard import."
+echo "Checking if Grafana service is available..."
+if ! kubectl get svc prometheus-stack-grafana -n $NAMESPACE &>/dev/null; then
+    echo "Grafana service not found yet. Skipping port-forward and dashboard import."
+    echo "You can import the dashboard later with: ./import-dashboard.sh"
+    exit 0
+fi
+
+# Try to find Grafana pod for at most 90 seconds
+MAX_ATTEMPTS=6
+ATTEMPT=0
+GRAFANA_RUNNING=false
+
+while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
+    if kubectl get pod -l app.kubernetes.io/name=grafana -n $NAMESPACE | grep -q "Running"; then
+        GRAFANA_RUNNING=true
+        break
+    fi
+    ATTEMPT=$((ATTEMPT+1))
+    echo "Waiting for Grafana pod to be in Running state... (attempt $ATTEMPT/$MAX_ATTEMPTS)"
+    sleep 15
+done
+
+if [ "$GRAFANA_RUNNING" != "true" ]; then
+    echo "Grafana pod not in Running state after $MAX_ATTEMPTS attempts. Skipping port-forward and dashboard import."
     echo "You can import the dashboard later with: ./import-dashboard.sh"
     exit 0
 fi
@@ -151,31 +178,6 @@ if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
     exit 1
 fi
 
-# Add datasources using Grafana API
-echo "Adding Prometheus datasource..."
-curl -s -X POST http://admin:prom-operator@localhost:3000/api/datasources \
-  -H "Content-Type: application/json" \
-  --data-binary '{
-    "name":"Prometheus",
-    "type":"prometheus",
-    "uid":"prometheus",
-    "url":"http://prometheus-stack-kube-prom-prometheus:9090",
-    "access":"proxy",
-    "isDefault":true
-  }'
-
-echo "Adding Loki datasource..."
-curl -s -X POST http://admin:prom-operator@localhost:3000/api/datasources \
-  -H "Content-Type: application/json" \
-  --data-binary '{
-    "name":"Loki",
-    "type":"loki",
-    "uid":"loki",
-    "url":"http://loki-stack:3100",
-    "access":"proxy",
-    "isDefault":false
-  }'
-
 # Import dashboard
 echo "Importing dashboard..."
 MONITORING_NAMESPACE=$NAMESPACE ./import-dashboard.sh
@@ -187,22 +189,19 @@ kill $PF_PID &>/dev/null || true
 # Create a ConfigMap to mark that the dashboard has been imported
 kubectl create configmap grafana-game-server-dashboard -n $NAMESPACE --from-literal=imported=true --dry-run=client -o yaml | kubectl apply -f -
 
+# Start persistent port-forward in the background
+echo "Starting persistent port-forward for Grafana..."
+nohup kubectl port-forward svc/prometheus-stack-grafana 3000:$GRAFANA_CONTAINER_PORT -n $NAMESPACE > /tmp/grafana-port-forward.log 2>&1 &
+PORT_FORWARD_PERSISTENT_PID=$!
+echo "Port-forward started with PID: $PORT_FORWARD_PERSISTENT_PID"
+echo "You can kill it later with: kill $PORT_FORWARD_PERSISTENT_PID"
+echo "Log file: /tmp/grafana-port-forward.log"
+
 # Display Grafana access information
 echo ""
 echo "==== MONITORING DASHBOARD ===="
-GRAFANA_URL="http://localhost:3000"  # Port-forwarded URL
-EXTERNAL_URL=""
-
-if [ -n "$(kubectl get svc -n $NAMESPACE prometheus-stack-grafana -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)" ]; then
-    EXTERNAL_URL="http://$(kubectl get svc -n $NAMESPACE prometheus-stack-grafana -o jsonpath='{.status.loadBalancer.ingress[0].ip}'):${GRAFANA_CONTAINER_PORT}"
-elif [ -n "$(kubectl get svc -n $NAMESPACE prometheus-stack-grafana -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)" ]; then
-    EXTERNAL_URL="http://$(kubectl get svc -n $NAMESPACE prometheus-stack-grafana -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'):${GRAFANA_CONTAINER_PORT}"
-fi
-
-echo "Grafana port-forwarded URL: $GRAFANA_URL (run 'kubectl port-forward svc/prometheus-stack-grafana 3000:${GRAFANA_CONTAINER_PORT} -n $NAMESPACE')"
-if [ -n "$EXTERNAL_URL" ]; then
-    echo "Grafana external URL: $EXTERNAL_URL"
-fi
+echo "Grafana is now accessible at: http://localhost:3000"
+echo "You can also access it at: http://localhost:30080 (via nodePort)"
 echo "Grafana username: admin"
 echo "Grafana password: prom-operator"
 

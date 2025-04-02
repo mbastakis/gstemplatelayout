@@ -1,0 +1,13 @@
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: infrastructure
+  namespace: flux-system
+spec:
+  interval: 1m0s
+  sourceRef:
+    kind: GitRepository
+    name: gs-template-repo
+  path: ./flux/infrastructure/overlays/default
+  prune: true # Automatically remove resources that are no longer present in Git
+  wait: true # Wait for resources to be ready before proceeding

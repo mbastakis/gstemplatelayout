@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: client-simulator
+  labels:
+    app: client-simulator
+  annotations:
+    # FluxCD annotations
+    fluxcd.io/automated: "true"
+    fluxcd.io/tag.client-simulator: semver:~1.0
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: client-simulator
+  template:
+    metadata:
+      labels:
+        app: client-simulator
+    spec:
+      containers:
+        - name: client-simulator
+          image: ${REGISTRY_NAME}/client-simulator:latest # Will be replaced by FluxCD
+          imagePullPolicy: Always
+          args:
+            - "--master-host"
+            - "master-server"
+            - "--master-port"
+            - "7000"
+            - "--num-clients"
+            - "55"
+            - "--action-interval"
+            - "500"
+          env:
+            - name: USE_PLAIN_CONSOLE_LOGGING
+              value: "true"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          volumeMounts:
+            - name: logs-volume
+              mountPath: /logs
+      volumes:
+        - name: logs-volume
+          emptyDir: {}

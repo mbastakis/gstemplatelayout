@@ -1,0 +1,73 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: master-server
+  labels:
+    app: master-server
+spec:
+  selector:
+    app: master-server
+  ports:
+    - port: 7000
+      targetPort: 7000
+      name: tcp
+    - port: 8080
+      targetPort: 8080
+      name: health
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: master-server
+  labels:
+    app: master-server
+  annotations:
+    # FluxCD annotations
+    fluxcd.io/automated: "true"
+    fluxcd.io/tag.master-server: semver:~1.0
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: master-server
+  template:
+    metadata:
+      labels:
+        app: master-server
+    spec:
+      containers:
+        - name: master-server
+          image: ${REGISTRY_NAME}/master-server:latest # Will be replaced by FluxCD
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 7000
+            - containerPort: 8080 # Health check endpoint
+          env:
+            - name: USE_PLAIN_CONSOLE_LOGGING
+              value: "true"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: logs-volume
+              mountPath: /logs
+      volumes:
+        - name: logs-volume
+          emptyDir: {}

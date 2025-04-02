@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: game-server-dashboard
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+data:
+  game-server-dashboard.json: |-
+    # Content of dashboards/game-server-dashboard.json
+    # In a real setup, this would contain the actual dashboard JSON content
+    # You would typically copy the content from k8s/monitoring/dashboards/game-server-dashboard.json

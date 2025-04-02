@@ -1,0 +1,33 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: master-server
+spec:
+  template:
+    spec:
+      containers:
+        - name: master-server
+          image: localhost:5000/master-server:latest
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: game-server
+spec:
+  template:
+    spec:
+      containers:
+        - name: game-server
+          image: localhost:5000/game-server:latest
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: client-simulator
+spec:
+  template:
+    spec:
+      containers:
+        - name: client-simulator
+          image: localhost:5000/client-simulator:latest

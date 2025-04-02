@@ -1,0 +1,133 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: game-server
+  labels:
+    app: game-server
+spec:
+  selector:
+    app: game-server
+  ports:
+    - port: 7100
+      targetPort: 7100
+      name: tcp
+    - port: 8081
+      targetPort: 8081
+      name: health
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: game-server
+  labels:
+    app: game-server
+  annotations:
+    # FluxCD annotations
+    fluxcd.io/automated: "true"
+    fluxcd.io/tag.game-server: semver:~1.0
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: game-server
+  template:
+    metadata:
+      labels:
+        app: game-server
+    spec:
+      initContainers:
+        - name: wait-for-master-server
+          image: curlimages/curl:latest
+          command:
+            [
+              "sh",
+              "-c",
+              'echo "Waiting for master-server to be ready..."; until curl -s http://master-server:8080/ready > /dev/null && curl -s http://master-server:8080/ready | grep -q "Ready"; do echo "$(date) - waiting for master-server:8080/ready..."; sleep 2; done; echo "Master server is ready!"',
+            ]
+      containers:
+        - name: game-server
+          image: ${REGISTRY_NAME}/game-server:latest # Will be replaced by FluxCD
+          imagePullPolicy: Always
+          args:
+            - "--master-host"
+            - "master-server"
+            - "--master-port"
+            - "7000"
+            - "--port"
+            - "7100"
+            - "--max-players"
+            - "100"
+          ports:
+            - containerPort: 7100
+            - containerPort: 8081 # Health check endpoint
+          env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: USE_PLAIN_CONSOLE_LOGGING
+              value: "true"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8081
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: logs-volume
+              mountPath: /logs
+      volumes:
+        - name: logs-volume
+          emptyDir: {}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: game-server-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: game-server
+  minReplicas: 1
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 25
+          periodSeconds: 60
